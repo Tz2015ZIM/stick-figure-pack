@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Pop-up Blocker",
+  "version": "1.1.0",
+  "description": "A sidebar menu of pop-up blockers: pop-up tabs, covering overlays, alert boxes, notification requests and \"Leave site?\" prompts.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "sidebar_action": {
+    "default_panel": "panel.html",
+    "default_title": "Pop-up Blocker",
+    "default_icon": "icons/sidebar.png",
+    "panel_width": 380
+  },
+  "action": {
+    "default_title": "Pop-up Blocker",
+    "default_popup": "panel.html?popup",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "tabs", "webNavigation", "scripting", "contextMenus"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page-guard.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["common.js", "stickman.js", "content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
+  ]
+}
