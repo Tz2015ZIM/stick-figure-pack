@@ -25,7 +25,10 @@
 #     Animator vs. Animation style: punches, kicks, grabbing it and dragging
 #     it off, and windows thrown at it (they go back where they were
 #     afterwards; with none to hand he throws little Flash panels of his own);
-#     click him to hit back, Esc to stop
+#     beat the pointer's health bar down and he smashes it to pieces and
+#     celebrates, until it pulls itself back together for another round;
+#     click him to hit back, Esc to stop. Hard mode (tray menu, or ticked
+#     with Fight mode) makes him far tougher, faster and meaner
 
 param(
     [string]$Handoff = ''       # set when another copy of him hands over to this one, see Switch-Body
@@ -412,6 +415,36 @@ public static class SM {
         GC.KeepAlive(cb);
         return list.ToArray();
     }
+
+    // ---- breaking the pointer, in a fight ------------------------------------
+    [StructLayout(LayoutKind.Sequential)] struct CURSORINFO { public int Size, Flags; public IntPtr Shape; public POINT At; }
+    [StructLayout(LayoutKind.Sequential)] struct ICONINFO { public bool IsIcon; public int HotX, HotY; public IntPtr Mask, Colour; }
+    [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO ci);
+    [DllImport("user32.dll")] static extern IntPtr CopyIcon(IntPtr h);
+    [DllImport("user32.dll")] static extern bool GetIconInfo(IntPtr h, out ICONINFO ii);
+    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr h, int key, byte alpha, int flags);
+
+    // A copy of the pointer as it looks right now, over whatever program it is
+    // over, with its hot spot in hot[0], hot[1]; IntPtr.Zero if it is hidden.
+    // Free it with DestroyIcon.
+    public static IntPtr PointerShape(int[] hot) {
+        CURSORINFO ci = new CURSORINFO();
+        ci.Size = Marshal.SizeOf(typeof(CURSORINFO));
+        if (!GetCursorInfo(ref ci) || (ci.Flags & 1) == 0 || ci.Shape == IntPtr.Zero) return IntPtr.Zero;  // CURSOR_SHOWING
+        IntPtr h = CopyIcon(ci.Shape);
+        if (h == IntPtr.Zero) return IntPtr.Zero;
+        ICONINFO ii;
+        if (GetIconInfo(h, out ii)) {
+            hot[0] = ii.HotX; hot[1] = ii.HotY;
+            if (ii.Mask != IntPtr.Zero)   DeleteObject(ii.Mask);
+            if (ii.Colour != IntPtr.Zero) DeleteObject(ii.Colour);
+        }
+        return h;
+    }
+
+    // The whole window at alpha 1: nothing you can see, but clicks stop there.
+    public static void Veil(IntPtr h) { SetLayeredWindowAttributes(h, 0, 1, 2); }      // LWA_ALPHA
 }
 
 public struct PEER { public int Slot, Pid, X, Y, Dir, State, With, Act; }
@@ -883,6 +916,8 @@ $S = @{
     click = $false              # allowed to really press the buttons he stands on
     throw = $true               # allowed to throw windows at the pointer in a fight
     grabPtr = $true             # allowed to grab the pointer and drag it off in a fight
+    killPtr = $true             # allowed to break the pointer in a fight, see Break-Pointer
+    hard    = $false            # fight in hard mode, see $LEVELS
     symbol  = $false            # he is wrapped in a symbol box, Flash style
     symName = ''                # what the instance was named in the dialog
     symType = 'Movie Clip'      # Movie Clip / Button / Graphic
@@ -1388,8 +1423,10 @@ function Step-Friends {
 # reach he picks up a window instead and throws it at it, and with the pointer
 # far off that is his main weapon: he runs to windows along his ledge, jumps
 # for ones hanging above him, and throws them one after another, up to three
-# in the air at once. Click him to hit back - eight hits and he is out, and
-# when he comes round he gives up.
+# in the air at once. The pointer has hits too, and when they run out he
+# breaks it and wins the round (see Break-Pointer), until it mends. Click
+# him to hit back - eight hits and he is out, and when he comes round he
+# gives up.
 #
 # It is all show. While he fights he never presses buttons or opens shortcuts.
 # A window he throws is only ever moved: never closed, resized, minimised or
@@ -1403,8 +1440,9 @@ function Step-Friends {
 # would hide this table from every function called while it is in scope.
 $F = @{
     on    = $false
-    hp    = 8; max = 8          # hits he can still take before he is knocked out
+    hp    = 8; max = 8          # hits he can still take before he is knocked out, see $TUNE
     ko    = $false              # knocked out: he lies down as soon as he lands
+    second = $false             # he has already got back up from one knockout
     intro = $false              # the first thing he does is square up to you
     inv   = 0                   # frames before he can be hit again
     hurt  = 0                   # frames left of the red flash
@@ -1431,7 +1469,7 @@ $F = @{
     run = 1                     # the way he is running off with it
     struggle = 0.0              # how hard you have been pulling it back
 }
-$FIGHT_STATES = @('hunt', 'guard', 'taunt', 'punch', 'kick', 'ko', 'fetch', 'heave', 'hurl', 'haul', 'fling')
+$FIGHT_STATES = @('hunt', 'guard', 'taunt', 'punch', 'kick', 'ko', 'fetch', 'heave', 'hurl', 'haul', 'fling', 'win', 'shock')
 $FX_LEN = 10
 
 # every window he has thrown, by handle: where it was before the fight (X0, Y0)
@@ -1445,20 +1483,63 @@ $JUMP_PULL  = 12                # and dropping back down with it
 $REACH_UP   = 240 * $SC         # highest window bottom, above his feet, he jumps for
 $FAR_OFF    = 300 * $SC         # the pointer further off than this: the windows come out
 $FETCH_FAR  = 700 * $SC         # and he goes this far along his ledge to get one
-$MAX_FLYING = 3                 # windows in the air at once
 
 $GRAB_HOLD   = 84               # frames he runs about with your pointer before throwing it
 $GRAB_SNATCH = 8                # the first of them, reaching out and taking it
 $FLING_LEN   = 14               # the throw at the end
 $FLING_AT    = 5                # the frame of the throw he lets go on
-$STRUGGLE    = 170              # how hard you have to pull, design units, to get it back
+
+# Hard mode, ticked in the tray menu or the Convert to Symbol dialog: the same
+# fight, but he takes far more beating, blocks, gets back up from his first
+# knockout, attacks sooner and reaches further, runs faster, dodges more,
+# throws more windows at once, holds on to your pointer harder, and your
+# pointer breaks sooner. $TUNE is whichever of these is in force.
+$LEVELS = @{
+    normal = @{
+        hp = 8; ptr = 10            # hits he can take, and hits the pointer can take
+        pace = 1.0                  # multiplies every wait between his attacks, throws and grabs
+        reach = 1.0; speed = 1.0    # multiply how far his blows reach, and how fast he closes in
+        kick = 1                    # hits a kick or flying kick takes off the pointer
+        block = 0                   # percent of the clicks he sees coming that he blocks
+        second = $false             # gets back up from his first knockout
+        dodge = 33; alert = 28      # percent chance he hops out of the way of a swipe this fast
+        flying = 3                  # windows in the air at once
+        struggle = 170              # how hard you have to pull, design units, to get your pointer back
+        inv = 12                    # frames after a hit before he can be hit again
+    }
+    hard = @{
+        hp = 20; ptr = 6
+        pace = 0.5
+        reach = 1.25; speed = 1.4
+        kick = 2
+        block = 40
+        second = $true
+        dodge = 67; alert = 20
+        flying = 5
+        struggle = 320
+        inv = 18
+    }
+}
+$TUNE = $LEVELS.normal
+
+function Set-Hard($on) {
+    $S.hard = [bool]$on
+    $script:TUNE = if ($S.hard) { $LEVELS.hard } else { $LEVELS.normal }
+    $hardItem.Checked = $S.hard
+    # mid-fight, the bars change size but keep how full they were
+    $F.hp = [Math]::Max(1, [int][Math]::Round($F.hp * $TUNE.hp / [double]$F.max)); $F.max = $TUNE.hp
+    if (-not $PTR.dead) { $PTR.hp = [Math]::Max(1, [int][Math]::Round($PTR.hp * $TUNE.ptr / [double]$PTR.max)) }
+    $PTR.shown = $PTR.shown * $TUNE.ptr / [double]$PTR.max; $PTR.max = $TUNE.ptr
+    Sync-SymbolItem
+}
 
 function Start-Fight {
     $c = [System.Windows.Forms.Cursor]::Position
-    $F.on = $true; $F.hp = $F.max; $F.ko = $false; $F.intro = $true
-    $F.inv = 0; $F.cool = 20; $F.air = ''; $F.px = $c.X; $F.py = $c.Y
-    $F.fly = $null; $F.fetch = $null; $F.flying.Clear(); $F.throwCool = 90    # fists first
-    $F.grab = $false; $F.grabCool = 60
+    $F.on = $true; $F.max = $TUNE.hp; $F.hp = $F.max; $F.ko = $false; $F.second = $false; $F.intro = $true
+    $F.inv = 0; $F.cool = [int](20 * $TUNE.pace); $F.air = ''; $F.px = $c.X; $F.py = $c.Y
+    $F.fly = $null; $F.fetch = $null; $F.flying.Clear(); $F.throwCool = [int](90 * $TUNE.pace)   # fists first
+    $F.grab = $false; $F.grabCool = [int](60 * $TUNE.pace)
+    $PTR.max = $TUNE.ptr; $PTR.hp = $PTR.max; $PTR.shown = [double]$PTR.max
     $S.pending = ''                         # squaring up is his entrance now
     $S.chase = 0; $S.chasePeer = -1
     if ($S.with -ge 0) { Stop-Meeting }
@@ -1466,6 +1547,8 @@ function Start-Fight {
 }
 
 function End-Fight {
+    Restore-Pointer                         # in pieces: whole again at once
+    $PTR.bar = 0; Hide-PtrBar
     $F.on = $false; $F.ko = $false; $F.air = ''; $F.kn = 0
     $F.fly = $null; $F.fetch = $null; $F.flying.Clear()    # whatever he threw goes back, see Step-Tidy
     foreach ($prop in @($PROPS)) { Remove-Prop $prop }      # his own panels just go
@@ -1483,8 +1566,11 @@ function Test-MouseHeld {
 }
 
 # his fist or foot, or a window he threw, found the pointer: it is knocked
-# ($kx, $ky) pixels the first frame, and a little less each frame after
-function Land-Blow($kx = $S.dir * 14 * $SC, $ky = -5 * $SC) {
+# ($kx, $ky) pixels the first frame, and a little less each frame after, and
+# loses $dmg of its hits
+function Land-Blow($kx = $S.dir * 14 * $SC, $ky = -5 * $SC, $dmg = 1) {
+    if ($PTR.dead) { return }                       # nothing there to hit
+    if (Hurt-Pointer $dmg $kx $ky) { return }       # that one broke it
     $c = [System.Windows.Forms.Cursor]::Position
     Pop-Spark $c.X $c.Y
     if (-not (Test-MouseHeld)) { $F.kx = $kx; $F.ky = $ky; $F.kn = 6; $F.kd = 0.62 }
@@ -1552,7 +1638,7 @@ function Test-Flying($h) {
 # A throw is due: go and get a window. With -Conjure, when none of yours will
 # do, a panel of his own pops up in his hands instead.
 function Try-Throw($range, [switch]$Conjure) {
-    if (-not $S.throw -or $F.throwCool -gt 0 -or $null -ne $F.fly -or $F.flying.Count -ge $MAX_FLYING) { return $false }
+    if (-not $S.throw -or $F.throwCool -gt 0 -or $null -ne $F.fly -or $F.flying.Count -ge $TUNE.flying) { return $false }
     $t = Find-Throwable $range
     if ($null -eq $t) {
         if ($Conjure -and $null -ne $S.ledge) { return (Conjure-Prop) }
@@ -1638,7 +1724,7 @@ function Launch-Window {
     $F.fly = $null
     if ($c.X -ne [int]$S.x) { $S.dir = [Math]::Sign($c.X - $S.x) }
     $S.state = 'hurl'; $S.timer = 14; $S.phase = 0.0
-    $F.throwCool = $RNG.Next(120, 240)     # runs down four times as fast with the pointer far off
+    $F.throwCool = [int]($RNG.Next(120, 240) * $TUNE.pace)    # runs down four times as fast with the pointer far off
     $F.cool = 16
 }
 
@@ -1707,7 +1793,7 @@ function Step-Flight($fl) {
         if ($c.X -ge $x -and $c.X -le $x + $fl.FW -and $c.Y -ge $y -and $c.Y -le $y + $fl.FH) {
             $fl.Hit = $true
             $sp = [Math]::Max(1.0, [Math]::Sqrt($fl.VX * $fl.VX + $fl.VY * $fl.VY))
-            Land-Blow ($fl.VX / $sp * 18 * $SC) ($fl.VY / $sp * 18 * $SC)
+            Land-Blow ($fl.VX / $sp * 18 * $SC) ($fl.VY / $sp * 18 * $SC) 2
             $fl.VX *= 0.5
         }
     }
@@ -1754,7 +1840,7 @@ function New-PropImage($kind, $w, $h) {
 # nothing of yours to throw: a panel appears right in front of him, on the
 # side the pointer is on, with a spark, and he takes hold of it
 function Conjure-Prop {
-    if ($PROPS.Count -ge $MAX_FLYING) { return $false }
+    if ($PROPS.Count -ge $TUNE.flying) { return $false }
     $c = [System.Windows.Forms.Cursor]::Position
     $w = [int](220 * $SC); $h = [int](140 * $SC)
     $a = [System.Windows.Forms.Screen]::FromPoint((New-Object System.Drawing.Point ([int]$S.x), ([int]($S.y - 30 * $SC)))).WorkingArea
@@ -1828,7 +1914,7 @@ function Start-Grab {
 function Release-Pointer {
     if (-not $F.grab) { return }
     $F.grab = $false; $F.struggle = 0.0
-    $F.grabCool = $RNG.Next(150, 270)
+    $F.grabCool = [int]($RNG.Next(150, 270) * $TUNE.pace)
     Hide-Grip
 }
 
@@ -1856,7 +1942,7 @@ function Step-Grab {
     $c  = [System.Windows.Forms.Cursor]::Position
     $ux = $c.X - $F.gx; $uy = $c.Y - $F.gy
     $F.struggle = $F.struggle * 0.85 + [Math]::Sqrt($ux * $ux + $uy * $uy)
-    if ($F.struggle -gt $STRUGGLE * $SC) {
+    if ($F.struggle -gt $TUNE.struggle * $SC) {
         # you yanked it out of his hand, and he stumbles
         Release-Pointer
         $S.state = 'fall'; $F.air = 'hurt'; $S.wall = $null
@@ -1884,6 +1970,7 @@ function Step-Grab {
 function Fling-Pointer {
     Release-Pointer
     if (Test-MouseHeld) { return }
+    if (Hurt-Pointer 2 ($S.dir * 44 * $SC) (-22 * $SC)) { return }     # it breaks as it leaves his hand
     $F.kx = $S.dir * 44 * $SC; $F.ky = -22 * $SC; $F.kn = 12; $F.kd = 0.8
 }
 
@@ -1919,11 +2006,18 @@ function Put-WindowsBack {
     $THROWN.Clear()
 }
 
-# you clicked him: he is thrown back, still facing you
+# you clicked him: he is thrown back, still facing you. On his feet and
+# facing you, he often sees it coming, blocks it, and hits straight back.
 function Hit-Him($c) {
     if ($F.inv -gt 0 -or $S.state -eq 'ko') { return }
     Pop-Spark $c.X $c.Y
-    $F.hp--; $F.inv = 12; $F.hurt = 12
+    $facing = $c.X -eq [int]$S.x -or [Math]::Sign($c.X - $S.x) -eq $S.dir
+    if ($facing -and $S.state -in @('guard', 'taunt', 'hunt', 'punch', 'kick') -and $RNG.Next(0, 100) -lt $TUNE.block) {
+        $F.inv = 8; $F.cool = 0
+        $S.state = 'guard'; $S.phase = 0.0
+        return
+    }
+    $F.hp--; $F.inv = $TUNE.inv; $F.hurt = 12
     if ($F.hp -le 0) { $F.ko = $true }
     $away = if ($c.X -gt $S.x) { -1 } else { 1 }
     $S.dir   = -$away
@@ -1954,7 +2048,7 @@ function Step-FightFrame {
     # the pointer sliding away from a blow, a little less each frame
     if ($F.kn -gt 0) {
         $F.kn--
-        if (Test-MouseHeld) { $F.kn = 0 }
+        if ((Test-MouseHeld) -or $PTR.dead) { $F.kn = 0 }
         else {
             $c  = [System.Windows.Forms.Cursor]::Position
             $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -1979,7 +2073,11 @@ function Step-FightFrame {
     if ($S.state -eq 'fall' -and $F.air -eq 'flykick' -and -not $F.hitDone) {
         $fx = $S.x + $S.dir * 19 * $SC - $c.X
         $fy = $S.y - 28 * $SC - $c.Y
-        if ($fx * $fx + $fy * $fy -lt 26 * 26 * $SC * $SC) { $F.hitDone = $true; Land-Blow }
+        $rr = 26 * $SC * $TUNE.reach
+        if ($fx * $fx + $fy * $fy -lt $rr * $rr) {
+            $F.hitDone = $true
+            Land-Blow ($S.dir * 14 * $SC) (-5 * $SC) $TUNE.kick
+        }
     }
 
     # anything he was doing on his own gives way to the fight
@@ -1990,12 +2088,24 @@ function Step-FightFrame {
         else              { $S.state = 'guard' }
     }
 
+    # the pointer lies in pieces: he celebrates, and when it starts pulling
+    # itself back together he jumps
+    if ($PTR.dead) {
+        if ($PTR.mend -and $S.state -in @('guard', 'hunt', 'taunt', 'hurl', 'win')) {
+            $S.state = 'shock'; $S.timer = 0; $S.phase = 0.0
+        } elseif (-not $PTR.mend -and $S.state -in @('guard', 'hunt', 'taunt', 'hurl')) {
+            $S.state = 'win'; $S.timer = 0; $S.phase = 0.0
+        }
+        if ($S.state -in @('win', 'shock') -and $PTR.x -ne [int]$S.x) { $S.dir = [Math]::Sign($PTR.x - $S.x) }
+    }
+
     # you swiped at him: now and then he hops back out of the way
-    if ($S.state -in @('guard', 'hunt', 'taunt') -and $F.dodge -le 0 -and $swipe -gt 28 * $SC) {
+    if ($S.state -in @('guard', 'hunt', 'taunt') -and $F.dodge -le 0 -and $swipe -gt $TUNE.alert * $SC) {
         $dx = $c.X - $S.x; $dy = $c.Y - ($S.y - 34 * $SC)
-        if ($dx * $dx + $dy * $dy -lt 100 * 100 * $SC * $SC) {
-            $F.dodge = 40
-            if ($RNG.Next(0, 3) -eq 0) {
+        $rr = 100 * $SC * $TUNE.reach
+        if ($dx * $dx + $dy * $dy -lt $rr * $rr) {
+            $F.dodge = [int](40 * $TUNE.pace)
+            if ($RNG.Next(0, 100) -lt $TUNE.dodge) {
                 if ($dx -ne 0) { $S.dir = [Math]::Sign($dx) }
                 $S.state = 'fall'; $F.air = 'flip'
                 $S.vy = -7.5 * $SC
@@ -2023,7 +2133,7 @@ function Step-Guard {
     $S.phase += 0.20
     if ($F.cool -gt 0) { return }
 
-    if ($ax -lt 30 * $SC -and $dy -gt -44 * $SC -and $dy -lt 24 * $SC) {
+    if ($ax -lt 30 * $SC * $TUNE.reach -and $dy -gt -44 * $SC -and $dy -lt 24 * $SC) {
         # in reach: now and then he grabs it and runs off with it
         if ($S.grabPtr -and $F.grabCool -le 0 -and -not (Test-MouseHeld) -and $RNG.Next(0, 2) -eq 0) {
             Start-Grab; return
@@ -2042,8 +2152,9 @@ function Step-Guard {
         $S.state = 'hunt'; $S.phase = 0.0
     } elseif ($ax -ge 30 * $SC) {
         # shuffle in with his fists up, never off the edge
-        if ($l.Ink) { [void](Step-Ink ($S.dir * $SPEED * 0.7)); return }
-        $S.x = [Math]::Max($l.L + $EDGE, [Math]::Min($l.R - $EDGE, $S.x + $S.dir * $SPEED * 0.7))
+        $v = $SPEED * 0.7 * $TUNE.speed
+        if ($l.Ink) { [void](Step-Ink ($S.dir * $v)); return }
+        $S.x = [Math]::Max($l.L + $EDGE, [Math]::Min($l.R - $EDGE, $S.x + $S.dir * $v))
     }
 }
 
@@ -2056,11 +2167,14 @@ function Step-Strike {
         $c  = [System.Windows.Forms.Cursor]::Position
         $hx = $S.x + $S.dir * 19 * $SC - $c.X
         $hy = $S.y - $(if ($S.state -eq 'punch') { 35 } else { 28 }) * $SC - $c.Y
-        if ($hx * $hx + $hy * $hy -lt 28 * 28 * $SC * $SC) { Land-Blow }
+        $rr = 28 * $SC * $TUNE.reach
+        if ($hx * $hx + $hy * $hy -lt $rr * $rr) {
+            Land-Blow ($S.dir * 14 * $SC) (-5 * $SC) $(if ($S.state -eq 'kick') { $TUNE.kick } else { 1 })
+        }
     }
     if ($S.timer -le 0) {
         $F.combo++
-        $F.cool  = $RNG.Next(5, 16)
+        $F.cool  = [int]($RNG.Next(5, 16) * $TUNE.pace)
         $S.phase = 0.0
         if ($F.gloat) { $F.gloat = $false; $S.state = 'taunt'; $S.timer = 45 }
         else          { $S.state = 'guard' }
@@ -2110,11 +2224,11 @@ function Step-Hunt {
         }
     }
     if ($l.Ink) {
-        if ((Step-Ink ($S.dir * $SPEED * 2.2)) -eq 'wall') { $S.state = 'taunt'; $S.timer = 40 }
+        if ((Step-Ink ($S.dir * $SPEED * 2.2 * $TUNE.speed)) -eq 'wall') { $S.state = 'taunt'; $S.timer = 40 }
         return
     }
 
-    $S.x += $S.dir * $SPEED * 2.2
+    $S.x += $S.dir * $SPEED * 2.2 * $TUNE.speed
     # he jumps off an edge to get at it; the floor's edge stops him
     if ($S.x -lt $l.L + $EDGE) {
         if ($l.Ground) { $S.x = $l.L + $EDGE; $S.state = 'taunt'; $S.timer = 40 }
@@ -2144,8 +2258,9 @@ function Step-Physics {
         $onHim = ($c.X -ge $S.x - $CX -and $c.X -le $S.x - $CX + $BOXW -and
                   $c.Y -ge $S.y - $FOOT -and $c.Y -le $S.y - $FOOT + $BOXH)
         if ($F.on) {
-            # in a fight, a click on him is a hit, and a click anywhere else is ignored
-            if ($onHim) { Hit-Him $c }
+            # in a fight, a click on him is a hit, and a click anywhere else is
+            # ignored; with the pointer in pieces a click is not aimed at anything
+            if ($onHim -and -not $PTR.dead) { Hit-Him $c }
         } elseif (-not $onHim -and -not $S.drag -and $S.state -ne 'climb') {
             $S.tx    = [double]$c.X
             $S.ty    = [double]$c.Y
@@ -2253,9 +2368,29 @@ function Step-Physics {
         'ko' {
             $S.phase += 0.15
             if (--$S.timer -le 0) {
-                End-Fight                           # he has had enough, and says so
-                $S.state = 'wave'; $S.timer = 70; $S.phase = 0.0
+                if ($TUNE.second -and -not $F.second) {
+                    # hard mode: the first time, he gets back up with half his hits
+                    $F.second = $true; $F.ko = $false
+                    $F.hp = [int][Math]::Ceiling($F.max / 2.0)
+                    $F.cool = 0
+                    $S.state = 'taunt'; $S.timer = 50; $S.phase = 0.0
+                } else {
+                    End-Fight                       # he has had enough, and says so
+                    $S.state = 'wave'; $S.timer = 70; $S.phase = 0.0
+                }
             }
+        }
+        'win' {
+            # he broke your pointer: punching the air, then jumping for joy
+            $S.phase += 0.30
+            $S.timer++
+            if (-not $PTR.dead) { $S.state = 'guard'; $S.phase = 0.0 }
+        }
+        'shock' {
+            # ...and it is putting itself back together
+            $S.phase += 0.30
+            $S.timer++
+            if (-not $PTR.dead) { $S.state = 'taunt'; $S.timer = 50; $S.phase = 0.0 }
         }
 
         'walk' {
@@ -2703,9 +2838,13 @@ function Draw-Figure($g) {
     if ($pose -eq 'meet')   { $pose = if ($S.waiting) { 'idle' } else { 'walk' } }
     if ($pose -eq 'social') { $pose = $SOCIAL_POSE[$S.act] }
     if ($pose -eq 'fall' -and $F.air -and -not $S.drag) { $pose = $F.air }
+    if ($pose -eq 'win' -and $S.timer -ge $PUMP_LEN) { $pose = 'cheer' }   # done punching the air
     if ($pose -eq 'cheer') {
         # the whole figure leaves the ground for the hop
         $g.TranslateTransform(0.0, [single](-[Math]::Abs([Math]::Sin($ph * 1.4)) * 9.0))
+    }
+    if ($pose -eq 'shock' -and $S.timer -lt 12) {
+        $g.TranslateTransform(0.0, [single](-[Math]::Sin($S.timer / 12.0 * [Math]::PI) * 7.0))   # a start
     }
 
     switch ($pose) {
@@ -3001,6 +3140,35 @@ function Draw-Figure($g) {
             [void]$segs.Add((Seg 22 40 (22 + $d * 4) 50))
             [void]$segs.Add((Seg (22 + $d * 4) 50 (22 - $d * 2) 58))
         }
+        'win' {
+            # punching the air over the pieces, other hand on his hip
+            $pump  = [Math]::Abs([Math]::Sin($ph * 1.3))
+            $headX = 22 + $d * 1.0
+            $headY = 14.0 + $pump * 0.8
+            [void]$segs.Add((Seg 22 (21 + $pump * 0.8) 22 40))
+            [void]$segs.Add((Seg 22 26 (22 + $d * 9) (21 - 2 * $pump)))                  # fist to the sky
+            [void]$segs.Add((Seg (22 + $d * 9) (21 - 2 * $pump) (22 + $d * 10) (10 - 3 * $pump)))
+            [void]$segs.Add((Seg 22 26 (22 - $d * 6) 33))                                  # hand on his hip
+            [void]$segs.Add((Seg (22 - $d * 6) 33 (22 - $d * 2) 39))
+            [void]$segs.Add((Seg 22 40 (22 - $d * 6) 62))                                  # feet planted wide
+            [void]$segs.Add((Seg 22 40 (22 + $d * 6) 62))
+        }
+        'shock' {
+            # it is mending: he jumps back, hands up, trembling, with a '!'
+            $q = [Math]::Sin($ph * 9.0) * 0.5
+            $headX = 22 - $d * 3 + $q
+            $headY = 16.0
+            [void]$segs.Add((Seg (22 - $d * 2 + $q) 23 22 41))
+            [void]$segs.Add((Seg (22 - $d * 1.5 + $q) 27 (22 + $d * 5) 23))
+            [void]$segs.Add((Seg (22 + $d * 5) 23 (22 + $d * 8) (15 + $q)))
+            [void]$segs.Add((Seg (22 - $d * 1.5 + $q) 27 (22 + $d * 4) 32))
+            [void]$segs.Add((Seg (22 + $d * 4) 32 (22 + $d * 10) (27 - $q)))
+            [void]$segs.Add((Seg 22 41 (22 + $d * 5) 51)); [void]$segs.Add((Seg (22 + $d * 5) 51 (22 + $d * 4) 62))
+            [void]$segs.Add((Seg 22 41 (22 - $d * 5) 52)); [void]$segs.Add((Seg (22 - $d * 5) 52 (22 - $d * 9) 62))
+            $ex = 22 + $d * 16
+            [void]$segs.Add((Seg $ex 7 $ex 13.5))
+            [void]$segs.Add((Seg $ex 17.4 $ex 17.8))
+        }
         'ko' {
             # flat on his back with his knees up
             $headX = 22 - $d * 12
@@ -3054,7 +3222,9 @@ function Draw-Figure($g) {
         }
     }
     if ($F.on) {
-        # the hits he can still take
+        # the hits he can still take, staying put while he hops about
+        $g.ResetTransform()
+        $g.ScaleTransform([single]$SC, [single]$SC)
         $hpHalo.Color = $penHalo.Color
         $g.FillRectangle($hpHalo, [single]7.0, [single]3.0, [single]30.0, [single]4.5)
         $g.FillRectangle($hpBack, [single]8.0, [single]4.0, [single]28.0, [single]2.5)
@@ -3206,6 +3376,487 @@ function Hide-Grip {
     [void][SM]::SetWindowPos($gripForm.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0097)   # HIDE | NOACTIVATE | NOZORDER | NOMOVE | NOSIZE
 }
 
+# --------------------------------------------------------- breaking the pointer
+# In a fight your pointer has hits of its own: the little bar that shows under
+# it for a moment each time he lands one. Run it down to nothing and he breaks
+# it. It hangs there cracking while everything freezes, bursts into pieces
+# that clatter down onto whatever is below, and he celebrates. Then the pieces
+# shiver, fly back together, and with a flash it is whole again, at full
+# strength - and he squares up for another round.
+#
+# While it is in pieces there is no pointer: it stays where it broke, you
+# cannot see it and nothing on screen can be clicked. That is all one window,
+# the shroud: a sheet over every screen at alpha 1, which takes the clicks and
+# shows a blank pointer. Nothing about the pointer is changed in Windows, so if
+# he quits or crashes mid-way the sheet goes with him and your pointer is just
+# there. A click mends it sooner, and Esc ends the fight at once.
+#
+# The pieces are cut from a picture of the pointer as it looked the moment it
+# broke, whatever shape it had; failing that, a plain white arrow.
+$PTR = @{
+    hp = 10; max = 10           # hits it can take, see $TUNE
+    shown = 10.0                # what the bar shows, easing after hp
+    bar = 0                     # frames left of the bar showing
+    dead = $false               # in pieces
+    t = 0                       # frames since it broke
+    mend = $false               # pulling itself back together
+    mt = 0                      # frames into that
+    hurry = $false              # you clicked: mend as soon as the pieces are down
+    x = 0; y = 0                # where it broke, and where it stays meanwhile
+    kx = 0.0; ky = 0.0          # the way the blow that broke it was going
+    img = $null                 # the picture the pieces are cut from
+    hx = 0; hy = 0              # its hot spot in that picture
+    cx = 0.0; cy = 0.0          # where the cracks start, in the picture
+    brush = $null               # the picture, as a brush to fill the pieces with
+    shards = New-Object System.Collections.ArrayList
+    wx = 0; wy = 0; ww = 0; wh = 0     # the wreck window, on screen
+    floor = 0.0                 # what the pieces land on
+    bmp = $null; g = $null      # the wreck window's picture
+}
+$CRACK_LEN  = 10        # frames it hangs there cracking, everything frozen, before it bursts
+$DEAD_LEN   = 120       # frames from breaking to starting to mend, unless you click
+$SHIVER_LEN = 14        # the pieces shiver where they lie,
+$REJOIN_LEN = 24        # fly back together,
+$GLOW_LEN   = 14        # and it flashes whole again
+$PUMP_LEN   = 48        # he punches the air this long, then jumps for joy
+$BAR_SHOW   = 60        # frames the bar stays up after a hit
+$SHARDS     = 8
+$SHARD_GRAV = 0.55 * $SC
+
+# a blow landed on the pointer: $true if that broke it
+function Hurt-Pointer($dmg, $kx, $ky) {
+    if (-not $S.killPtr -or $PTR.dead) { return $false }
+    $PTR.hp  = [Math]::Max(0, $PTR.hp - $dmg)
+    $PTR.bar = $BAR_SHOW
+    if ($PTR.hp -gt 0) { return $false }
+    # never with a mouse button down: it hangs on by a thread instead
+    if (Test-MouseHeld) { $PTR.hp = 1; return $false }
+    $null = Break-Pointer $kx $ky
+    return $true
+}
+
+function Break-Pointer($kx, $ky) {
+    $c = [System.Windows.Forms.Cursor]::Position
+    Release-Pointer
+    $F.kn = 0
+    $PTR.dead = $true; $PTR.t = 0; $PTR.mend = $false; $PTR.mt = 0; $PTR.hurry = $false
+    $PTR.x = $c.X; $PTR.y = $c.Y; $PTR.kx = [double]$kx; $PTR.ky = [double]$ky
+    $PTR.bar = 0
+    Hide-PtrBar
+    Get-PointerImage                        # before the shroud blanks it out
+    Open-Wreck
+    New-Shards
+    Show-Shroud
+    # a nudge there and back, so Windows looks again at what is under the
+    # pointer and finds the shroud's blank one
+    if (-not (Test-MouseHeld)) {
+        [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($PTR.x + 1), $PTR.y
+        [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point $PTR.x, $PTR.y
+    }
+    [System.Windows.Forms.Cursor]::Current = $blankCursor
+    Draw-Wreck
+    [void][SM]::SetWindowPos($wreckForm.Handle, [IntPtr](-1), 0, 0, 0, 0, 0x0053)   # TOPMOST, SHOW | NOACTIVATE | NOMOVE | NOSIZE
+    # whatever he had hold of it with, he lets go to celebrate
+    if ($S.state -in @('haul', 'fling')) { $S.state = 'guard'; $S.phase = 0.0 }
+}
+
+# a picture of the pointer as it looks right now, its hot spot, and where the
+# cracks start from; a plain arrow if it cannot be had
+function Get-PointerImage {
+    $img = $null
+    $hot = New-Object 'int[]' 2
+    $h = [SM]::PointerShape($hot)
+    if ($h -ne [IntPtr]::Zero) {
+        try {
+            $ic  = [System.Drawing.Icon]::FromHandle($h)
+            $img = $ic.ToBitmap()
+            $ic.Dispose()
+        } catch { $img = $null }
+        [void][SM]::DestroyIcon($h)
+    }
+    $mid = if ($null -ne $img) { Get-PictureMiddle $img } else { $null }
+    if ($null -eq $mid) {
+        if ($null -ne $img) { $img.Dispose() }
+        $img = New-ArrowImage
+        $hot[0] = [int][Math]::Round(1.5 * $SC); $hot[1] = $hot[0]
+        $mid = Get-PictureMiddle $img
+        if ($null -eq $mid) { $mid = @(($img.Width / 3.0), ($img.Height / 2.0)) }
+    }
+    $PTR.img = $img; $PTR.hx = $hot[0]; $PTR.hy = $hot[1]
+    $PTR.cx = [double]$mid[0]; $PTR.cy = [double]$mid[1]
+}
+
+# the middle of what can be seen of a picture; $null if there is hardly
+# anything, or if it is solid all over (a pointer read back without its
+# see-through parts)
+function Get-PictureMiddle($img) {
+    $w = $img.Width; $h = $img.Height
+    $rect = New-Object System.Drawing.Rectangle 0, 0, $w, $h
+    $data = $img.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $px = New-Object 'int[]' ($w * $h)
+    [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $px, 0, $px.Length)
+    $img.UnlockBits($data)
+    $step = [Math]::Max(1, [int]($w / 40))
+    $n = 0; $all = 0; $mx = 0.0; $my = 0.0
+    for ($y = 0; $y -lt $h; $y += $step) {
+        for ($x = 0; $x -lt $w; $x += $step) {
+            $all++
+            if ((($px[$y * $w + $x] -shr 24) -band 0xFF) -gt 60) { $n++; $mx += $x; $my += $y }
+        }
+    }
+    if ($n -lt 12 -or $n -gt 0.85 * $all) { return $null }
+    , @(($mx / $n), ($my / $n))
+}
+
+# the plain white arrow with a black edge
+function New-ArrowImage {
+    $bmp = New-Object System.Drawing.Bitmap ([int][Math]::Ceiling(15 * $SC)), ([int][Math]::Ceiling(23 * $SC)), ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.ScaleTransform([single]$SC, [single]$SC)
+    $g.TranslateTransform([single]1.5, [single]1.5)
+    $xy  = @(0, 0, 0, 16.5, 4, 12.6, 6.8, 19.2, 9.4, 18.1, 6.7, 11.7, 11.8, 11.7)
+    $pts = New-Object 'System.Drawing.PointF[]' 7
+    for ($i = 0; $i -lt 7; $i++) { $pts[$i] = New-Object System.Drawing.PointF ([single]$xy[2 * $i]), ([single]$xy[2 * $i + 1]) }
+    $g.FillPolygon([System.Drawing.Brushes]::White, $pts)
+    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::Black), ([single]1.2)
+    $pen.LineJoin = 'Round'
+    $g.DrawPolygon($pen, $pts)
+    $pen.Dispose(); $g.Dispose()
+    return $bmp
+}
+
+# the top of whatever is under the spot where it broke: a window, a button, a
+# shortcut, or the bottom of the screen
+function Find-PieceFloor {
+    $at  = New-Object System.Drawing.Point $PTR.x, $PTR.y
+    $scr = [System.Windows.Forms.Screen]::FromPoint($at)
+    $best = [double]$scr.WorkingArea.Bottom
+    if ($best -lt $PTR.y + 12 * $SC) { $best = [double]$scr.Bounds.Bottom }    # it broke down on the taskbar
+    foreach ($l in $S.ledges) {
+        if ($l.Ground -or $l.Ink) { continue }
+        if ($PTR.x -lt $l.L -or $PTR.x -gt $l.R) { continue }
+        if ($l.T -gt $PTR.y + 12 * $SC -and $l.T -lt $best) { $best = $l.T }
+    }
+    return [Math]::Max($best, $PTR.y + 12 * $SC)
+}
+
+# the wreck window: wide enough for the pieces to scatter, and reaching down to
+# where they land. Clicks go straight through it, to the shroud underneath.
+$wreckForm = $null
+
+function New-WreckWindow {
+    $script:wreckForm = New-Object System.Windows.Forms.Form
+    $wreckForm.FormBorderStyle = 'None'
+    $wreckForm.ShowInTaskbar   = $false
+    $wreckForm.StartPosition   = 'Manual'
+    $wreckForm.Text            = 'Stickman wreck'
+    $script:wreckIA   = New-Object System.Drawing.Imaging.ImageAttributes
+    $script:wreckHalo = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), ([single](4 * $SC))
+    $script:wreckRing = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 0, 153, 255)), ([single](2 * $SC))
+    $h = $wreckForm.Handle
+    # LAYERED | TRANSPARENT (clicks fall through) | TOOLWINDOW | NOACTIVATE
+    [void][SM]::SetWindowLong($h, -20, ([SM]::GetExStyle($h) -bor 0x00080000 -bor 0x00000020 -bor 0x00000080 -bor 0x08000000))
+}
+
+function Open-Wreck {
+    if ($null -eq $wreckForm) { New-WreckWindow }
+    $half = [int](170 * $SC)
+    $PTR.floor = Find-PieceFloor
+    $PTR.wx = $PTR.x - $half; $PTR.ww = 2 * $half
+    $PTR.wy = $PTR.y - [int](110 * $SC)
+    $PTR.wh = [int][Math]::Ceiling($PTR.floor - $PTR.wy + 6 * $SC)
+    $PTR.bmp = New-Object System.Drawing.Bitmap ($PTR.ww), ($PTR.wh), ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $PTR.g = [System.Drawing.Graphics]::FromImage($PTR.bmp)
+    $PTR.g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $PTR.brush = New-Object System.Drawing.TextureBrush ($PTR.img), ([System.Drawing.Drawing2D.WrapMode]::Clamp)
+}
+
+# The picture cut into wedges from the middle out. Each is a triangle far
+# bigger than the pointer, so between them they cover all of it, and filled
+# with the picture it shows just its own piece.
+function New-Shards {
+    foreach ($sh in $PTR.shards) { $sh.Path.Dispose() }
+    $PTR.shards.Clear()
+    $img  = $PTR.img
+    $far  = 2.0 * ($img.Width + $img.Height)
+    $step = 2 * [Math]::PI / $SHARDS
+    $a0   = $RNG.NextDouble() * $step
+    $cuts = New-Object 'double[]' $SHARDS
+    for ($i = 0; $i -lt $SHARDS; $i++) { $cuts[$i] = $a0 + $i * $step + ($RNG.NextDouble() - 0.5) * 0.5 * $step }
+    $left = $PTR.x - $PTR.hx; $top = $PTR.y - $PTR.hy          # where the picture sits on screen
+    $pr   = 0.18 * [Math]::Min($img.Width, $img.Height)
+    for ($i = 0; $i -lt $SHARDS; $i++) {
+        $a = $cuts[$i]
+        $b = if ($i + 1 -lt $SHARDS) { $cuts[$i + 1] } else { $cuts[0] + 2 * [Math]::PI }
+        $m = ($a + $b) / 2.0
+        $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $path.AddPolygon([System.Drawing.PointF[]]@(
+            (New-Object System.Drawing.PointF ([single]$PTR.cx), ([single]$PTR.cy)),
+            (New-Object System.Drawing.PointF ([single]($PTR.cx + [Math]::Cos($a) * $far)), ([single]($PTR.cy + [Math]::Sin($a) * $far))),
+            (New-Object System.Drawing.PointF ([single]($PTR.cx + [Math]::Cos($b) * $far)), ([single]($PTR.cy + [Math]::Sin($b) * $far)))))
+        $px = $PTR.cx + [Math]::Cos($m) * $pr
+        $py = $PTR.cy + [Math]::Sin($m) * $pr
+        [void]$PTR.shards.Add(@{
+            Path = $path
+            PX = $px; PY = $py                          # what it turns about, in the picture
+            DX = [Math]::Cos($m); DY = [Math]::Sin($m)  # which way it faces out from the middle
+            HX = $left + $px; HY = $top + $py           # home: where that sits with the pointer whole
+            X = $left + $px; Y = $top + $py; VX = 0.0; VY = 0.0; Rot = 0.0; VR = 0.0; Rest = $false
+            SX = 0.0; SY = 0.0; SR = 0.0                # where it set off from, mending
+        })
+    }
+}
+
+# the moment it bursts: a spark, and every piece goes flying, out from the
+# middle and on the way the blow was going
+function Burst-Pointer {
+    Pop-Spark $PTR.x $PTR.y
+    $kl = [Math]::Max(1.0, [Math]::Sqrt($PTR.kx * $PTR.kx + $PTR.ky * $PTR.ky))
+    foreach ($sh in $PTR.shards) {
+        $v = (2.5 + 3.5 * $RNG.NextDouble()) * $SC
+        $sh.VX = $sh.DX * $v * 0.8 + $PTR.kx / $kl * 2.5 * $SC
+        $sh.VY = $sh.DY * $v - (2.5 + 2.0 * $RNG.NextDouble()) * $SC + $PTR.ky / $kl * 1.5 * $SC
+        $sh.VR = ($RNG.NextDouble() * 2 - 1) * 16.0
+    }
+}
+
+# one piece, one frame, flying or bouncing; $false once it lies still
+function Step-Shard($sh) {
+    if ($sh.Rest) { return $false }
+    $sh.VY += $SHARD_GRAV
+    $sh.VX *= 0.96
+    $sh.X  += $sh.VX; $sh.Y += $sh.VY
+    $sh.Rot += $sh.VR
+    $lo = $PTR.floor - 2 * $SC
+    if ($sh.Y -gt $lo) {
+        $sh.Y = $lo
+        $sh.VY = if ($sh.VY -gt 3 * $SC) { -$sh.VY * 0.4 } else { 0.0 }
+        $sh.VX *= 0.6; $sh.VR *= 0.6
+        if ($sh.VY -eq 0.0 -and [Math]::Abs($sh.VX) -lt 0.3 * $SC) { $sh.Rest = $true }
+    }
+    # the edges of the wreck window hold them in
+    $edge = 6 * $SC
+    if ($sh.X -lt $PTR.wx + $edge) { $sh.X = $PTR.wx + $edge; $sh.VX = [Math]::Abs($sh.VX) * 0.4 }
+    elseif ($sh.X -gt $PTR.wx + $PTR.ww - $edge) { $sh.X = $PTR.wx + $PTR.ww - $edge; $sh.VX = -[Math]::Abs($sh.VX) * 0.4 }
+    if ($sh.Y -lt $PTR.wy + $edge) { $sh.Y = $PTR.wy + $edge; $sh.VY = [Math]::Abs($sh.VY) * 0.3 }
+    return $true
+}
+
+function Start-Mend {
+    $PTR.mend = $true; $PTR.mt = 0
+    foreach ($sh in $PTR.shards) {
+        $sh.SX = $sh.X; $sh.SY = $sh.Y
+        $r = $sh.Rot % 360.0                        # the short way back round to upright
+        if ($r -gt 180) { $r -= 360 } elseif ($r -lt -180) { $r += 360 }
+        $sh.SR = $r
+    }
+}
+
+# every frame it is in pieces
+function Step-Wreck {
+    $PTR.t++
+    if ($PTR.t -gt $DEAD_LEN + 300) { Restore-Pointer; return }    # never stuck like this
+    # it stays where it broke, unless you are holding a button down
+    if (-not (Test-MouseHeld)) {
+        $c = [System.Windows.Forms.Cursor]::Position
+        if ($c.X -ne $PTR.x -or $c.Y -ne $PTR.y) {
+            [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point $PTR.x, $PTR.y
+        }
+    }
+    # the shroud blanks it whenever Windows asks, but asks late while this
+    # thread is busy, so it is blanked again every frame as well
+    [System.Windows.Forms.Cursor]::Current = $blankCursor
+    if ($PTR.t -lt $CRACK_LEN) { Draw-Wreck; return }
+    if ($PTR.t -eq $CRACK_LEN) { Burst-Pointer }
+
+    if (-not $PTR.mend) {
+        if ($PTR.t -ge $DEAD_LEN -or ($PTR.hurry -and $PTR.t -ge $CRACK_LEN + 24)) {
+            Start-Mend
+        } else {
+            $moving = $false
+            foreach ($sh in $PTR.shards) { if (Step-Shard $sh) { $moving = $true } }
+            if ($moving) { Draw-Wreck }
+            return
+        }
+    }
+    $PTR.mt++
+    Draw-Wreck
+    if ($PTR.mt -ge $SHIVER_LEN + $REJOIN_LEN + $GLOW_LEN) { Restore-Pointer }
+}
+
+# where a piece is drawn this frame: x, y on screen, and its turn in degrees
+function Get-ShardPose($sh) {
+    if ($PTR.t -lt $CRACK_LEN) {
+        # still in one piece, but the cracks are opening and it shakes
+        $gap = [Math]::Pow($PTR.t / [double]$CRACK_LEN, 2) * 1.6 * $SC
+        $j = $(if ($PTR.t % 2 -eq 0) { 1 } else { -1 }) * 0.8 * $SC
+        return , @(($sh.HX + $sh.DX * $gap + $j), ($sh.HY + $sh.DY * $gap), 0.0)
+    }
+    if (-not $PTR.mend) { return , @($sh.X, $sh.Y, $sh.Rot) }
+    if ($PTR.mt -le $SHIVER_LEN) {
+        $j = 1.2 * $SC
+        return , @(($sh.SX + ($RNG.NextDouble() * 2 - 1) * $j), ($sh.SY + ($RNG.NextDouble() * 2 - 1) * $j),
+                   ($sh.SR + ($RNG.NextDouble() * 2 - 1) * 6))
+    }
+    # home on an arc, easing in and out, turning upright as it goes
+    $u = [Math]::Min(1.0, ($PTR.mt - $SHIVER_LEN) / [double]$REJOIN_LEN)
+    $e = $u * $u * (3 - 2 * $u)
+    $lift = [Math]::Sin($u * [Math]::PI) * 36 * $SC
+    return , @(($sh.SX + ($sh.HX - $sh.SX) * $e), ($sh.SY + ($sh.HY - $sh.SY) * $e - $lift), ($sh.SR * (1 - $e)))
+}
+
+function Draw-Wreck {
+    $g = $PTR.g
+    $g.ResetTransform()
+    $g.Clear([System.Drawing.Color]::Transparent)
+    $glow = if ($PTR.mend) { $PTR.mt - $SHIVER_LEN - $REJOIN_LEN } else { -1 }
+    if ($glow -ge 0) {
+        Draw-Mended $g $glow
+    } else {
+        foreach ($sh in $PTR.shards) {
+            $at = Get-ShardPose $sh
+            $g.ResetTransform()
+            $g.TranslateTransform([single]($at[0] - $PTR.wx), [single]($at[1] - $PTR.wy))
+            $g.RotateTransform([single]$at[2])
+            $g.TranslateTransform([single](-$sh.PX), [single](-$sh.PY))
+            $g.FillPath($PTR.brush, $sh.Path)
+        }
+    }
+    $hb = $PTR.bmp.GetHbitmap([System.Drawing.Color]::FromArgb(0))
+    [SM]::Blit($wreckForm.Handle, $hb, [int]$PTR.wx, [int]$PTR.wy, [int]$PTR.ww, [int]$PTR.wh)
+    [void][SM]::DeleteObject($hb)
+}
+
+# whole again: it flashes blue-white and fades back to itself, and a ring
+# goes out from it
+function Draw-Mended($g, $n) {
+    $k = 1.0 - $n / [double]$GLOW_LEN
+    $cm = New-Object System.Drawing.Imaging.ColorMatrix
+    $cm.Matrix00 = [single](1 - $k); $cm.Matrix11 = [single](1 - $k); $cm.Matrix22 = [single](1 - $k)
+    $cm.Matrix40 = [single](0.55 * $k); $cm.Matrix41 = [single](0.8 * $k); $cm.Matrix42 = [single]$k
+    $wreckIA.SetColorMatrix($cm)
+    $img = $PTR.img
+    $ix = [int]($PTR.x - $PTR.hx - $PTR.wx); $iy = [int]($PTR.y - $PTR.hy - $PTR.wy)
+    $g.ResetTransform()
+    $g.DrawImage($img, (New-Object System.Drawing.Rectangle $ix, $iy, $img.Width, $img.Height),
+        0, 0, $img.Width, $img.Height, [System.Drawing.GraphicsUnit]::Pixel, $wreckIA)
+    $r  = (6 + 34 * (1 - $k)) * $SC
+    $mx = $ix + $PTR.cx; $my = $iy + $PTR.cy
+    $a  = [int](255 * $k)
+    $wreckHalo.Color = [System.Drawing.Color]::FromArgb($a, 255, 255, 255)
+    $wreckRing.Color = [System.Drawing.Color]::FromArgb($a, 0, 153, 255)
+    foreach ($pen in @($wreckHalo, $wreckRing)) {
+        $g.DrawEllipse($pen, [single]($mx - $r), [single]($my - $r), [single](2 * $r), [single](2 * $r))
+    }
+}
+
+# whole again, and yours: full strength, right where it broke
+function Restore-Pointer {
+    if (-not $PTR.dead) { return }
+    $PTR.dead = $false; $PTR.mend = $false
+    Hide-Shroud                             # first, whatever else goes wrong
+    if ($null -ne $wreckForm) { [void][SM]::SetWindowPos($wreckForm.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0097) }
+    if (-not (Test-MouseHeld)) {
+        [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point ($PTR.x + 1), $PTR.y
+        [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point $PTR.x, $PTR.y
+    }
+    $PTR.hp = $PTR.max; $PTR.shown = 0.0; $PTR.bar = $BAR_SHOW     # the bar fills back up
+    $F.kn = 0
+    foreach ($sh in $PTR.shards) { $sh.Path.Dispose() }
+    $PTR.shards.Clear()
+    foreach ($o in @($PTR.brush, $PTR.g, $PTR.bmp, $PTR.img)) { if ($null -ne $o) { $o.Dispose() } }
+    $PTR.brush = $null; $PTR.g = $null; $PTR.bmp = $null; $PTR.img = $null
+    if ($S.state -in @('win', 'shock')) { $S.state = 'taunt'; $S.timer = 50; $S.phase = 0.0 }
+}
+
+# The shroud. Alpha 1 all over: you cannot see it, but it catches every click,
+# and over it the pointer is a blank one. Made the first time it is needed.
+$shroudForm = $null
+
+function New-Shroud {
+    $script:shroudForm = New-Object System.Windows.Forms.Form
+    $shroudForm.FormBorderStyle = 'None'
+    $shroudForm.ShowInTaskbar   = $false
+    $shroudForm.StartPosition   = 'Manual'
+    $shroudForm.Text            = 'Stickman shroud'
+    $shroudForm.BackColor       = [System.Drawing.Color]::Black
+    $blank = New-Object System.Drawing.Bitmap 32, 32, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $bg = [System.Drawing.Graphics]::FromImage($blank)
+    $bg.Clear([System.Drawing.Color]::Transparent)
+    $bg.Dispose()
+    $script:blankCursor = New-Object System.Windows.Forms.Cursor ($blank.GetHicon())
+    $blank.Dispose()
+    $shroudForm.Cursor = $blankCursor
+    $h = $shroudForm.Handle
+    # LAYERED | TOOLWINDOW | NOACTIVATE, and not TRANSPARENT: catching clicks is its job
+    [void][SM]::SetWindowLong($h, -20, ([SM]::GetExStyle($h) -bor 0x00080000 -bor 0x00000080 -bor 0x08000000))
+    [SM]::Veil($h)
+    $shroudForm.Add_MouseDown({ $PTR.hurry = $true })
+}
+
+function Show-Shroud {
+    if ($null -eq $shroudForm) { New-Shroud }
+    $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    # TOPMOST, over every screen: SHOWWINDOW | NOACTIVATE
+    [void][SM]::SetWindowPos($shroudForm.Handle, [IntPtr](-1), $vs.Left, $vs.Top, $vs.Width, $vs.Height, 0x0050)
+}
+
+function Hide-Shroud {
+    if ($null -eq $shroudForm) { return }
+    [void][SM]::SetWindowPos($shroudForm.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0097)   # HIDE | NOACTIVATE | NOZORDER | NOMOVE | NOSIZE
+}
+
+# The pointer's bar, just under it, for a moment after each hit: blue, going
+# red when it is nearly done for. Made the first time it is needed.
+$PBW = [int][Math]::Round(34 * $SC)
+$PBH = [int][Math]::Round(6 * $SC)
+$barForm = $null
+
+function New-BarWindow {
+    $script:barForm = New-Object System.Windows.Forms.Form
+    $barForm.FormBorderStyle = 'None'
+    $barForm.ShowInTaskbar   = $false
+    $barForm.StartPosition   = 'Manual'
+    $barForm.Text            = 'Stickman pointer bar'
+    $script:barBmp  = New-Object System.Drawing.Bitmap $PBW, $PBH, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $script:barG    = [System.Drawing.Graphics]::FromImage($barBmp)
+    $script:barHalo = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+    $script:barBack = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Black)
+    $script:barFill = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+    $h = $barForm.Handle
+    # LAYERED | TRANSPARENT (clicks fall through) | TOOLWINDOW | NOACTIVATE
+    [void][SM]::SetWindowLong($h, -20, ([SM]::GetExStyle($h) -bor 0x00080000 -bor 0x00000020 -bor 0x00000080 -bor 0x08000000))
+}
+
+function Draw-PtrBar {
+    if ($null -eq $barForm) { New-BarWindow }
+    if (--$PTR.bar -le 0 -or $PTR.dead -or -not $F.on) { $PTR.bar = 0; Hide-PtrBar; return }
+    $PTR.shown += ($PTR.hp - $PTR.shown) * 0.2
+    $a   = [int](255 * [Math]::Min(1.0, $PTR.bar / 12.0))          # it fades at the end
+    $low = $PTR.hp -le $PTR.max * 0.34
+    $barHalo.Color = [System.Drawing.Color]::FromArgb($a, 255, 255, 255)
+    $barBack.Color = if ($low) { [System.Drawing.Color]::FromArgb($a, 90, 24, 24) } else { [System.Drawing.Color]::FromArgb($a, 16, 48, 84) }
+    $barFill.Color = if ($low) { [System.Drawing.Color]::FromArgb($a, 232, 52, 52) } else { [System.Drawing.Color]::FromArgb($a, 0, 153, 255) }
+    $bd = [single]$SC
+    $iw = [single]($PBW - 2 * $SC); $ih = [single]($PBH - 2 * $SC)
+    $barG.Clear([System.Drawing.Color]::Transparent)
+    $barG.FillRectangle($barHalo, [single]0, [single]0, [single]$PBW, [single]$PBH)
+    $barG.FillRectangle($barBack, $bd, $bd, $iw, $ih)
+    $barG.FillRectangle($barFill, $bd, $bd, [single]($iw * [Math]::Max(0.0, $PTR.shown) / $PTR.max), $ih)
+    $c  = [System.Windows.Forms.Cursor]::Position
+    $h  = $barForm.Handle
+    $hb = $barBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0))
+    [SM]::Blit($h, $hb, [int]($c.X - 11 * $SC), [int]($c.Y + 24 * $SC), $PBW, $PBH)
+    [void][SM]::DeleteObject($hb)
+    [void][SM]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0053)     # TOPMOST, SHOW | NOACTIVATE | NOMOVE | NOSIZE
+}
+
+function Hide-PtrBar {
+    if ($null -eq $barForm) { return }
+    [void][SM]::SetWindowPos($barForm.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0097)
+}
+
 # ----------------------------------------------------------- convert to symbol
 # Hidden names. Call the symbol after one of Alan Becker's stick figures and he
 # becomes it: he takes its colour and does the thing that figure is known for.
@@ -3297,7 +3948,7 @@ function Show-SymbolDialog {
     $dlg.MinimizeBox     = $false
     $dlg.ShowInTaskbar   = $false
     $dlg.TopMost         = $true
-    $dlg.ClientSize      = New-Object System.Drawing.Size (& $U 344), (& $U 232)
+    $dlg.ClientSize      = New-Object System.Drawing.Size (& $U 344), (& $U 254)
 
     $lblName = New-Object System.Windows.Forms.Label
     $lblName.Text     = 'Name:'
@@ -3358,25 +4009,34 @@ function Show-SymbolDialog {
     $chkFight.Location = New-Object System.Drawing.Point (& $U 176), (& $U 90)
     $chkFight.Checked  = $F.on
 
+    # the same fight, far harder (see $LEVELS)
+    $chkHard = New-Object System.Windows.Forms.CheckBox
+    $chkHard.Text     = 'Hard mode'
+    $chkHard.AutoSize = $true
+    $chkHard.Location = New-Object System.Drawing.Point (& $U 176), (& $U 112)
+    $chkHard.Checked  = $S.hard
+    $chkHard.Enabled  = $chkFight.Checked
+    $chkFight.Add_CheckedChanged({ $chkHard.Enabled = $chkFight.Checked })
+
     $lblFight = New-Object System.Windows.Forms.Label
     $lblFight.Text      = 'He fights your pointer: grabs it, drags it off, throws windows at it (they go back after). Click him to hit back, Esc stops it.'
     $lblFight.ForeColor = [System.Drawing.SystemColors]::GrayText
-    $lblFight.Location  = New-Object System.Drawing.Point (& $U 176), (& $U 112)
+    $lblFight.Location  = New-Object System.Drawing.Point (& $U 176), (& $U 134)
     $lblFight.Size      = New-Object System.Drawing.Size (& $U 160), (& $U 72)
 
     $ok = New-Object System.Windows.Forms.Button
     $ok.Text         = 'OK'
     $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $ok.Location     = New-Object System.Drawing.Point (& $U 168), (& $U 196)
+    $ok.Location     = New-Object System.Drawing.Point (& $U 168), (& $U 218)
     $ok.Size         = New-Object System.Drawing.Size (& $U 76), (& $U 26)
 
     $cancel = New-Object System.Windows.Forms.Button
     $cancel.Text         = 'Cancel'
     $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $cancel.Location     = New-Object System.Drawing.Point (& $U 252), (& $U 196)
+    $cancel.Location     = New-Object System.Drawing.Point (& $U 252), (& $U 218)
     $cancel.Size         = New-Object System.Drawing.Size (& $U 76), (& $U 26)
 
-    $dlg.Controls.AddRange(@($lblName, $txtName, $lblType, $cmbType, $lblReg, $regPanel, $chkFight, $lblFight, $ok, $cancel))
+    $dlg.Controls.AddRange(@($lblName, $txtName, $lblType, $cmbType, $lblReg, $regPanel, $chkFight, $chkHard, $lblFight, $ok, $cancel))
     $dlg.AcceptButton = $ok
     $dlg.CancelButton = $cancel
     $dlg.Add_Shown({ $dlg.Activate(); $txtName.SelectAll(); $txtName.Focus() })
@@ -3386,11 +4046,12 @@ function Show-SymbolDialog {
     $type = [string]$cmbType.SelectedItem
     $reg  = [int]($regBtns | Where-Object { $_.Checked } | Select-Object -First 1).Tag
     $fight = $chkFight.Checked
+    $hard  = $chkHard.Checked
     $dlg.Dispose()
 
     if ($res -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
     if ($name -eq '') { $name = "Symbol $($S.symNum)" }
-    return @{ name = $name; type = $type; reg = $reg; fight = $fight }
+    return @{ name = $name; type = $type; reg = $reg; fight = $fight; hard = $hard }
 }
 
 # keeps the menu entries and the tray tooltip in step with what he currently is
@@ -3407,7 +4068,7 @@ function Sync-SymbolItem {
         $symItem.ToolTipText = 'Wraps him in a symbol box with a registration point, the way F8 does in Flash.'
         $tray.Text           = 'Desktop Stickman'
     }
-    if ($F.on) { $tray.Text += ' (fighting)' }
+    if ($F.on) { $tray.Text += $(if ($S.hard) { ' (fighting, hard)' } else { ' (fighting)' }) }
 }
 
 # ------------------------------------------------------------------ interaction
@@ -3445,6 +4106,18 @@ $grabItem.Checked = $true
 $grabItem.ToolTipText = 'In fight mode he grabs your pointer and drags it off. Wiggle the mouse hard or click him to get it back; he never clicks anything.'
 $grabItem.Add_Click({ $S.grabPtr = $grabItem.Checked; if (-not $S.grabPtr) { Release-Pointer } })
 
+$killItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Let him break the pointer in a fight'
+$killItem.CheckOnClick = $true
+$killItem.Checked = $true
+$killItem.ToolTipText = 'In fight mode the pointer has hits too (the bar under it). When they run out he smashes it and celebrates, and a few seconds later it mends itself. Click to mend it sooner; Esc ends the fight.'
+$killItem.Add_Click({ $S.killPtr = $killItem.Checked })
+
+$hardItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Hard mode'
+$hardItem.CheckOnClick = $true
+$hardItem.Checked = $false
+$hardItem.ToolTipText = 'A much harder fight: he takes 20 hits instead of 8, blocks, gets back up once, attacks faster, dodges more, throws more windows, and your pointer breaks after 6 hits. Can be switched mid-fight.'
+$hardItem.Add_Click({ Set-Hard $hardItem.Checked })
+
 # wraps him in the symbol the dialog came back with
 function Convert-Symbol($r) {
     $S.symbol   = $true
@@ -3464,6 +4137,7 @@ function Convert-Symbol($r) {
         $S.symFlashMax = 14
     }
     $S.symFlash = $S.symFlashMax
+    if ($null -ne $r.hard) { Set-Hard $r.hard }
     if ($r.fight) { Start-Fight } elseif ($F.on) { End-Fight }
     Sync-SymbolItem
 }
@@ -3502,6 +4176,8 @@ function Switch-Body($sym) {
         from   = $PID
         shove  = $S.shove; white = [Ink]::White; click = $S.click; open = $S.open; throw = $S.throw
         grab   = $S.grabPtr
+        kill   = $S.killPtr
+        hard   = $S.hard
         symNum = $S.symNum
         sym    = $sym
         unwrap = ($null -eq $sym)
@@ -3545,6 +4221,8 @@ function Restore-Handoff {
     $S.open  = [bool]$INHERIT.open;   $openItem.Checked  = $S.open
     if ($null -ne $INHERIT.throw) { $S.throw = [bool]$INHERIT.throw; $throwItem.Checked = $S.throw }
     if ($null -ne $INHERIT.grab)  { $S.grabPtr = [bool]$INHERIT.grab; $grabItem.Checked = $S.grabPtr }
+    if ($null -ne $INHERIT.kill)  { $S.killPtr = [bool]$INHERIT.kill; $killItem.Checked = $S.killPtr }
+    if ($null -ne $INHERIT.hard)  { Set-Hard $INHERIT.hard }
     $S.symNum = [int]$INHERIT.symNum
     if ($null -ne $INHERIT.sym) { Convert-Symbol $INHERIT.sym }
     elseif ($INHERIT.unwrap)    { Break-Symbol }
@@ -3582,6 +4260,8 @@ $menu = New-Object System.Windows.Forms.ContextMenuStrip
 [void]$menu.Items.Add($openItem)
 [void]$menu.Items.Add($throwItem)
 [void]$menu.Items.Add($grabItem)
+[void]$menu.Items.Add($killItem)
+[void]$menu.Items.Add($hardItem)
 [void]$menu.Items.Add('-')
 [void]$menu.Items.Add($symItem)
 [void]$menu.Items.Add($breakItem)
@@ -3664,14 +4344,29 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 30
 $timer.Add_Tick({
     try {
-        Step-Physics
-        if ($F.grab) { Step-Grab }      # after he has moved, so it sits right in his hand
+        # while the pointer cracks, everything stops, him included
+        if (-not ($PTR.dead -and $PTR.t -lt $CRACK_LEN)) {
+            Step-Physics
+            if ($F.grab) { Step-Grab }      # after he has moved, so it sits right in his hand
+        }
     }
     catch {
         # he runs with no console, so leave a trail if something goes wrong
         "$(Get-Date -Format s)  $($_.Exception.Message)  @ $($_.InvocationInfo.ScriptLineNumber)" |
             Out-File -FilePath $errLog -Append -Encoding utf8
         $S.state = 'fall'; $S.vy = 0.0
+    }
+    if ($PTR.dead) {
+        try { Step-Wreck }
+        catch {
+            # anything going wrong with the pieces: the pointer is simply back
+            "$(Get-Date -Format s)  pointer: $($_.Exception.Message)  @ $($_.InvocationInfo.ScriptLineNumber)" |
+                Out-File -FilePath $errLog -Append -Encoding utf8
+            try { Restore-Pointer } catch { $PTR.dead = $false; Hide-Shroud }
+        }
+    }
+    if ($PTR.bar -gt 0) {
+        try { Draw-PtrBar } catch { $PTR.bar = 0 }
     }
     # tell the others where he is, and see if one of them asked everyone to go
     try { Publish-Self } catch { }
@@ -3692,8 +4387,9 @@ $timer.Add_Tick({
             $F.fx = 0
         }
     }
-    if ($S.tick % 50 -eq 0) {
-        # stay above other topmost windows without ever stealing focus
+    if ($S.tick % 50 -eq 0 -and -not $PTR.dead) {
+        # stay above other topmost windows without ever stealing focus (but
+        # under the shroud while the pointer is in pieces, see Break-Pointer)
         [void][SM]::SetWindowPos($script:handle, [IntPtr](-1), 0, 0, 0, 0, 0x0013)
     }
 })
@@ -3723,6 +4419,7 @@ $form.Add_FormClosed({
     try { $sg.Dispose(); $sprite.Dispose() } catch { }
     try { if ($null -ne $fxForm) { $fxForm.Dispose(); $fxG.Dispose(); $fxBmp.Dispose() } } catch { }
     try { if ($null -ne $gripForm) { $gripForm.Dispose(); [void][SM]::DeleteObject($gripHb) } } catch { }
+    try { foreach ($o in @($shroudForm, $wreckForm, $barForm)) { if ($null -ne $o) { $o.Dispose() } } } catch { }
     try { $penSymHalo.Dispose(); $penSym.Dispose(); $penReg.Dispose() } catch { }
     $tray.Visible = $false
     $tray.Dispose()
