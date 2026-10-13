@@ -433,6 +433,8 @@ func mainTick() {
     // tell the others where he is, and see if one of them asked everyone to go
     publishSelf()
     if Peers.quitAsked() { quitStickman(); return }
+    // you beat him, and he has faded right away: this copy of him is done
+    if S.gone > 0 { S.gone -= 1; if S.gone <= 0 { quitStickman(); return } }
     if S.symFlash > 0 { S.symFlash -= 1 }
     placeSprite()
     if F.fx > 0 { drawFx() }

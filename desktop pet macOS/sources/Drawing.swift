@@ -57,6 +57,7 @@ func placeSprite() {
     guard let win = spriteWin, let view = spriteView else { return }
     let x = (S.x - CX).rounded(), y = (S.y - FOOT).rounded()
     win.setFrameOrigin(cocoaOrigin(x, y, BOXH))
+    win.alphaValue = S.gone > 0 ? CGFloat(S.gone) / CGFloat(GONE_LEN) : 1   // fading away, see "ko"
     view.needsDisplay = true
     if !win.isVisible { win.orderFrontRegardless() }
     MY_WINDOWS.insert(win.windowNumber)

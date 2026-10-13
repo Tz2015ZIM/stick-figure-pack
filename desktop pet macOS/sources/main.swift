@@ -29,7 +29,8 @@
 //     Animator vs. Animation style: punches, kicks, grabbing it and dragging
 //     it off, and windows thrown at it (they go back where they were
 //     afterwards; with none to hand he throws little Flash panels of his own);
-//     click him to hit back, Esc to stop
+//     click him to hit back, Esc to stop; knock him out and he fades away
+//     and quits
 //
 // Moving windows, finding buttons and finding desktop icons all need the
 // Accessibility permission; standing on white needs Screen Recording. Without

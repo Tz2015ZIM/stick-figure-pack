@@ -66,7 +66,8 @@ with **−**, and add the app again (or switch it off and on).
   the Gravity Pencil page in any browser.
 - **Fight mode**: works the same. He never throws Activity Monitor or anything
   that floats above normal windows, and everything he threw glides back when
-  the fight ends or when he quits. Esc stops the fight.
+  the fight ends or when he quits. Esc stops the fight. Knock him out and
+  you've won: he fades away and that copy of him quits.
 
 ## Files
 

@@ -27,8 +27,9 @@
 #     afterwards; with none to hand he throws little Flash panels of his own);
 #     beat the pointer's health bar down and he smashes it to pieces and
 #     celebrates, until it pulls itself back together for another round;
-#     click him to hit back, Esc to stop. Hard mode (tray menu, or ticked
-#     with Fight mode) makes him far tougher, faster and meaner
+#     click him to hit back, Esc to stop; knock him out and he fades away
+#     and quits. Hard mode (tray menu, or ticked with Fight mode) makes him
+#     far tougher, faster and meaner
 
 param(
     [string]$Handoff = ''       # set when another copy of him hands over to this one, see Switch-Body
@@ -164,8 +165,10 @@ public static class SM {
     [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref POINT pd,
         ref SIZE ps, IntPtr src, ref POINT psrc, int key, ref BLEND bf, int flags);
 
-    // Draws the sprite and moves the window to (x, y) in one go.
-    public static void Blit(IntPtr hwnd, IntPtr hbmp, int x, int y, int w, int h) {
+    // Draws the sprite and moves the window to (x, y) in one go; alpha below
+    // 255 fades the whole thing out on top of its own per-pixel alpha.
+    public static void Blit(IntPtr hwnd, IntPtr hbmp, int x, int y, int w, int h) { Blit(hwnd, hbmp, x, y, w, h, 255); }
+    public static void Blit(IntPtr hwnd, IntPtr hbmp, int x, int y, int w, int h, int alpha) {
         IntPtr screen = GetDC(IntPtr.Zero);
         IntPtr mem    = CreateCompatibleDC(screen);
         IntPtr old    = SelectObject(mem, hbmp);
@@ -173,7 +176,7 @@ public static class SM {
         POINT dst = new POINT(); dst.X = x; dst.Y = y;
         POINT src = new POINT();
         SIZE  sz  = new SIZE();  sz.CX = w; sz.CY = h;
-        BLEND bf  = new BLEND(); bf.Alpha = 255; bf.Format = 1;   // AC_SRC_ALPHA
+        BLEND bf  = new BLEND(); bf.Alpha = (byte)Math.Max(0, Math.Min(255, alpha)); bf.Format = 1;   // AC_SRC_ALPHA
 
         UpdateLayeredWindow(hwnd, screen, ref dst, ref sz, mem, ref src, 0, ref bf, 2);  // ULW_ALPHA
 
@@ -936,6 +939,7 @@ $S = @{
     waiting = $false            # stood still, waiting for his friend to arrive
     social  = 300               # frames until he goes looking for company again
     chasePeer = -1              # slot of the friend he is chasing in a game of tag
+    gone    = 0                 # frames left fading away after you beat him, see 'ko'
 }
 
 function New-Ledge($h, $l, $t, $r, $b, $ground, $max, $btn, $uia = -1, $icon = $false, $name = '', $ink = $false) {
@@ -1425,8 +1429,8 @@ function Step-Friends {
 # for ones hanging above him, and throws them one after another, up to three
 # in the air at once. The pointer has hits too, and when they run out he
 # breaks it and wins the round (see Break-Pointer), until it mends. Click
-# him to hit back - eight hits and he is out, and when he comes round he
-# gives up.
+# him to hit back - eight hits and he is out, and you have won: he lies
+# there seeing stars, fades away, and that copy of him quits.
 #
 # It is all show. While he fights he never presses buttons or opens shortcuts.
 # A window he throws is only ever moved: never closed, resized, minimised or
@@ -1471,6 +1475,7 @@ $F = @{
 }
 $FIGHT_STATES = @('hunt', 'guard', 'taunt', 'punch', 'kick', 'ko', 'fetch', 'heave', 'hurl', 'haul', 'fling', 'win', 'shock')
 $FX_LEN = 10
+$GONE_LEN = 50                  # frames he takes to fade away once you have beaten him
 
 # every window he has thrown, by handle: where it was before the fight (X0, Y0)
 # and where he last put it (LX, LY), so it can be put back afterwards
@@ -2244,6 +2249,8 @@ function Step-Physics {
     if ($S.tick % 5 -eq 0) { Update-World }
     if ($PROPS.Count -gt 0) { Step-Props }
     if (-not $F.on -and $THROWN.Count -gt 0) { Step-Tidy }
+    # beaten for good: he lies there seeing stars while he fades away (main loop)
+    if ($S.gone -gt 0) { $S.phase += 0.15; return }
     if ($S.cool -gt 0) { $S.cool-- }
     if ($S.chase -gt 0) { $S.chase-- }
 
@@ -2375,8 +2382,9 @@ function Step-Physics {
                     $F.cool = 0
                     $S.state = 'taunt'; $S.timer = 50; $S.phase = 0.0
                 } else {
-                    End-Fight                       # he has had enough, and says so
-                    $S.state = 'wave'; $S.timer = 70; $S.phase = 0.0
+                    # you won: he stays down, fades away, and this copy of him quits
+                    End-Fight
+                    $S.state = 'ko'; $S.gone = $GONE_LEN
                 }
             }
         }
@@ -4283,7 +4291,7 @@ $menu.ShowItemToolTips = $true
 
 $form.Add_MouseDown({
     param($sender, $e)
-    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left -and $S.gone -le 0) {   # no picking him up as he fades
         $c = [System.Windows.Forms.Cursor]::Position
         $S.grabX = $c.X - ($S.x - $CX)
         $S.grabY = $c.Y - ($S.y - $FOOT)
@@ -4373,11 +4381,14 @@ $timer.Add_Tick({
     if ([Peers]::QuitAsked()) { $form.Close(); return }
     # his new process has him on screen now, so this one can go
     if ($null -ne $script:heir -and (Test-Heir)) { $form.Close(); return }
+    # you beat him, and he has faded right away: this copy of him is done
+    if ($S.gone -gt 0 -and --$S.gone -le 0) { $form.Close(); return }
     if ($S.symFlash -gt 0) { $S.symFlash-- }
     # one call draws him and moves the window, with his own alpha intact
     Draw-Figure $sg
     $hbmp = $sprite.GetHbitmap([System.Drawing.Color]::FromArgb(0))
-    [SM]::Blit($script:handle, $hbmp, [int]($S.x - $CX), [int]($S.y - $FOOT), $BOXW, $BOXH)
+    $alpha = if ($S.gone -gt 0) { [int](255 * $S.gone / $GONE_LEN) } else { 255 }
+    [SM]::Blit($script:handle, $hbmp, [int]($S.x - $CX), [int]($S.y - $FOOT), $BOXW, $BOXH, $alpha)
     [void][SM]::DeleteObject($hbmp)
     if ($F.fx -gt 0) {
         try { Draw-Fx }

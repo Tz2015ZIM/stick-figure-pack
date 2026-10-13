@@ -103,6 +103,7 @@ final class Stick {
     var waiting = false             // stood still, waiting for his friend to arrive
     var social = 300                // frames until he goes looking for company again
     var chasePeer = -1              // slot of the friend he is chasing in a game of tag
+    var gone = 0                    // frames left fading away after you beat him, see "ko"
 }
 let S = Stick()
 
@@ -552,6 +553,7 @@ let F = Fight()
 
 let FIGHT_STATES: Set<String> = ["hunt", "guard", "taunt", "punch", "kick", "ko", "fetch", "heave", "hurl", "haul", "fling"]
 let FX_LEN = 10
+let GONE_LEN = 50               // frames he takes to fade away once you have beaten him
 
 // every window he has thrown, by number: where it was before the fight (x0, y0)
 // and where he last put it (lx, ly), so it can be put back afterwards
@@ -1203,6 +1205,7 @@ func stepHunt() {
 // ------------------------------------------------------------------- his sprite
 // a left click on him: he is picked up (a quick click is a jump, see below)
 func spriteMouseDown() {
+    if S.gone > 0 { return }                // no picking him up as he fades
     let c = cursorPos()
     S.grabX = c.x - (S.x - CX)
     S.grabY = c.y - (S.y - FOOT)
@@ -1237,6 +1240,8 @@ func stepPhysics() {
     if S.tick % 5 == 0 { updateWorld() }
     if !PROPS.isEmpty { stepProps() }
     if !F.on && !THROWN.isEmpty { stepTidy() }
+    // beaten for good: he lies there seeing stars while he fades away (mainTick)
+    if S.gone > 0 { S.phase += 0.15; return }
     if S.cool > 0 { S.cool -= 1 }
     if S.chase > 0 { S.chase -= 1 }
 
@@ -1374,8 +1379,9 @@ func stepPhysics() {
         S.phase += 0.15
         S.timer -= 1
         if S.timer <= 0 {
-            endFight()                          // he has had enough, and says so
-            S.state = "wave"; S.timer = 70; S.phase = 0
+            // you won: he stays down, fades away, and this copy of him quits
+            endFight()
+            S.state = "ko"; S.gone = GONE_LEN
         }
 
     case "walk":
