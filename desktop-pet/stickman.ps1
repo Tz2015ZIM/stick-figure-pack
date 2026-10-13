@@ -27,9 +27,10 @@
 #     afterwards; with none to hand he throws little Flash panels of his own);
 #     beat the pointer's health bar down and he smashes it to pieces and
 #     celebrates, until it pulls itself back together for another round;
-#     click him to hit back, Esc to stop; knock him out and he fades away
-#     and quits. Hard mode (tray menu, or ticked with Fight mode) makes him
-#     far tougher, faster and meaner
+#     click him to hit back, Esc to stop; knock him out and "K.O.!" is typed
+#     above him, Flash Text tool style, as he fades away and quits. Hard mode
+#     (tray menu, or ticked with Fight mode) makes him far tougher, faster
+#     and meaner
 
 param(
     [string]$Handoff = ''       # set when another copy of him hands over to this one, see Switch-Body
@@ -1430,7 +1431,8 @@ function Step-Friends {
 # in the air at once. The pointer has hits too, and when they run out he
 # breaks it and wins the round (see Break-Pointer), until it mends. Click
 # him to hit back - eight hits and he is out, and you have won: he lies
-# there seeing stars, fades away, and that copy of him quits.
+# there seeing stars under a "K.O.!" (see Draw-KoText), fades away, and that
+# copy of him quits.
 #
 # It is all show. While he fights he never presses buttons or opens shortcuts.
 # A window he throws is only ever moved: never closed, resized, minimised or
@@ -2088,7 +2090,10 @@ function Step-FightFrame {
     # anything he was doing on his own gives way to the fight
     if ($S.state -in @('walk', 'idle', 'sit', 'wave', 'cheer', 'chase', 'knock', 'push', 'press', 'meet', 'social')) {
         $S.wall = $null; $S.phase = 0.0
-        if ($F.ko)        { $S.state = 'ko'; $S.timer = 160 }
+        if ($F.ko) {
+            $S.state = 'ko'; $S.timer = 160
+            if (-not $TUNE.second -or $F.second) { $KO.t = 0 }      # down for good: up goes "K.O.!", see Draw-KoText
+        }
         elseif ($F.intro) { $F.intro = $false; $S.state = 'taunt'; $S.timer = 50 }
         else              { $S.state = 'guard' }
     }
@@ -3342,6 +3347,116 @@ function Draw-Fx {
     [void][SM]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0053)     # TOPMOST, SHOW | NOACTIVATE | NOMOVE | NOSIZE
 }
 
+# ------------------------------------------------------------------------- K.O.
+# Knock him out for good and "K.O.!" is typed above him the way the animator
+# would with Flash's Text tool: a text box with its little round handle in the
+# corner grows a letter at a time, the caret blinking at its end. Then the
+# animator steps out of it and the text is left selected, in Flash blue, until
+# it fades away with him. It gets a window of its own, made the first time it
+# is needed, and clicks go straight through it.
+$KO_TEXT  = 'K.O.!'
+$KO_EM    = 36.0                # letter size, design units
+$KO_PAD   = 5.0                 # text to box
+$KO_M     = 6.0                 # box to window edge: room for the halo and the handle
+$KO_ABOVE = 36.0                # the bottom of the box, down from the top of his sprite
+$KO_WAIT  = 10                  # frames after he lands before the first letter
+$KO_KEY   = 4                   # frames per letter
+$KO_EDIT  = 18                  # frames the finished text is still being edited
+$KO = @{ t = -1 }               # frames since it went up, or -1 while it is not up
+$koForm = $null
+
+function New-KoWindow {
+    $script:koForm = New-Object System.Windows.Forms.Form
+    $koForm.FormBorderStyle = 'None'
+    $koForm.ShowInTaskbar   = $false
+    $koForm.StartPosition   = 'Manual'
+    $koForm.Text            = 'Stickman K.O.'
+    $h = $koForm.Handle
+    # LAYERED | TRANSPARENT (clicks fall through) | TOOLWINDOW | NOACTIVATE
+    [void][SM]::SetWindowLong($h, -20, ([SM]::GetExStyle($h) -bor 0x00080000 -bor 0x00000020 -bor 0x00000080 -bor 0x08000000))
+    New-KoArt
+}
+
+# the text as it stands after each letter, all on the same baseline, and what
+# it is drawn with
+function New-KoArt {
+    $fam = [System.Drawing.FontFamily]::GenericSansSerif
+    try { $fam = New-Object System.Drawing.FontFamily 'Arial Black' -ErrorAction Stop } catch { }
+    $at = New-Object System.Drawing.PointF 0, 0
+    $script:koPaths = @()
+    for ($i = 0; $i -le $KO_TEXT.Length; $i++) {
+        $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+        if ($i -gt 0) { $p.AddString($KO_TEXT.Substring(0, $i), $fam, 0, [single]$KO_EM, $at, [System.Drawing.StringFormat]::GenericTypographic) }
+        $script:koPaths += $p
+    }
+    $script:koBox = $koPaths[-1].GetBounds()          # all of it, once it is typed
+    $script:KOW = [int][Math]::Ceiling(($koBox.Width  + 2 * $KO_PAD + 2 * $KO_M) * $SC)
+    $script:KOH = [int][Math]::Ceiling(($koBox.Height + 2 * $KO_PAD + 2 * $KO_M) * $SC)
+    $script:koBmp = New-Object System.Drawing.Bitmap $KOW, $KOH, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $script:koG   = [System.Drawing.Graphics]::FromImage($koBmp)
+    $koG.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $script:koInk  = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(255, 24, 24, 28))
+    $script:koHalo = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), 4.5      # round the letters
+    $script:koRim  = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(200, 255, 255, 255)), 3.0   # round the thin lines
+    $script:koLine = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 24, 24, 28)), 1.0
+    $script:koBlue = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(255, 0, 153, 255)), 1.3
+    $koHalo.LineJoin = 'Round'
+}
+
+# $n letters typed so far, in their box: being edited, with the handle and
+# maybe the caret, or selected, in blue
+function Paint-KoText($n, $caret, $selected) {
+    $koG.ResetTransform()
+    $koG.Clear([System.Drawing.Color]::Transparent)
+    $koG.ScaleTransform([single]$SC, [single]$SC)
+    $w  = if ($n -gt 0) { $koPaths[$n].GetBounds().Right - $koBox.X } else { 0.0 }
+    $bx = [single]$KO_M; $by = [single]$KO_M
+    $bw = [single]($w + 2 * $KO_PAD); $bh = [single]($koBox.Height + 2 * $KO_PAD)
+    $koG.DrawRectangle($koRim, $bx, $by, $bw, $bh)
+    $koG.DrawRectangle($(if ($selected) { $koBlue } else { $koLine }), $bx, $by, $bw, $bh)
+    if (-not $selected) {
+        # the round handle of a text box that grows as you type
+        $r = 2.6
+        $koG.FillEllipse([System.Drawing.Brushes]::White, [single]($bx + $bw - $r), [single]($by - $r), [single](2 * $r), [single](2 * $r))
+        $koG.DrawEllipse($koLine, [single]($bx + $bw - $r), [single]($by - $r), [single](2 * $r), [single](2 * $r))
+    }
+    $koG.TranslateTransform([single]($KO_M + $KO_PAD - $koBox.X), [single]($KO_M + $KO_PAD - $koBox.Y))
+    if ($n -gt 0) {
+        $koG.DrawPath($koHalo, $koPaths[$n])
+        $koG.FillPath($koInk, $koPaths[$n])
+    }
+    if ($caret) {
+        $cx = [single]($koBox.X + $w + 2.6)
+        foreach ($p in @($koRim, $koLine)) { $koG.DrawLine($p, $cx, [single]($koBox.Y - 1.5), $cx, [single]($koBox.Bottom + 1.5)) }
+    }
+}
+
+# one frame of it, at his fading $alpha: typed, then selected, then gone with
+# him. If the fight ends some other way (Esc) while he is still down, it goes.
+function Draw-KoText($alpha) {
+    if ($null -eq $koForm) { New-KoWindow }
+    if ($S.gone -le 0 -and -not ($F.on -and $S.state -eq 'ko')) { $KO.t = -1; Hide-KoText; return }
+    $KO.t++
+    $last  = $KO_WAIT + ($KO_TEXT.Length - 1) * $KO_KEY      # the frame the last letter goes in
+    $n     = if ($KO.t -lt $KO_WAIT) { 0 } else { [Math]::Min($KO_TEXT.Length, [int][Math]::Floor(($KO.t - $KO_WAIT) / $KO_KEY) + 1) }
+    $sel   = $KO.t -ge $last + $KO_EDIT
+    $caret = -not $sel -and ($KO.t -lt $last -or [Math]::Floor(($KO.t - $last) / 8) % 2 -eq 0)    # steady while typing, then blinking
+    Paint-KoText $n $caret $sel
+    $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $x  = [Math]::Max($vs.Left, [Math]::Min($vs.Right - $KOW, [int]($S.x - $KOW / 2)))
+    $y  = [Math]::Max($vs.Top, [int]($S.y - $FOOT + ($KO_ABOVE + $KO_M) * $SC - $KOH))
+    $h  = $koForm.Handle
+    $hb = $koBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0))
+    [SM]::Blit($h, $hb, $x, $y, $KOW, $KOH, $alpha)
+    [void][SM]::DeleteObject($hb)
+    [void][SM]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0053)     # TOPMOST, SHOW | NOACTIVATE | NOMOVE | NOSIZE
+}
+
+function Hide-KoText {
+    if ($null -eq $koForm) { return }
+    [void][SM]::SetWindowPos($koForm.Handle, [IntPtr]::Zero, 0, 0, 0, 0, 0x0097)   # HIDE | NOACTIVATE | NOZORDER | NOMOVE | NOSIZE
+}
+
 # ------------------------------------------------------------------------- grip
 # While he has hold of your pointer, a small pad you can barely see sits under
 # it. A click lands on the pad and never on the program underneath, so a
@@ -4398,6 +4513,15 @@ $timer.Add_Tick({
             $F.fx = 0
         }
     }
+    if ($KO.t -ge 0) {
+        try { Draw-KoText $alpha }
+        catch {
+            "$(Get-Date -Format s)  K.O.: $($_.Exception.Message)  @ $($_.InvocationInfo.ScriptLineNumber)" |
+                Out-File -FilePath $errLog -Append -Encoding utf8
+            $KO.t = -1
+            try { Hide-KoText } catch { }
+        }
+    }
     if ($S.tick % 50 -eq 0 -and -not $PTR.dead) {
         # stay above other topmost windows without ever stealing focus (but
         # under the shroud while the pointer is in pieces, see Break-Pointer)
@@ -4429,6 +4553,7 @@ $form.Add_FormClosed({
     try { $scanPs.Dispose(); $scanRs.Close() } catch { }
     try { $sg.Dispose(); $sprite.Dispose() } catch { }
     try { if ($null -ne $fxForm) { $fxForm.Dispose(); $fxG.Dispose(); $fxBmp.Dispose() } } catch { }
+    try { if ($null -ne $koForm) { $koForm.Dispose(); $koG.Dispose(); $koBmp.Dispose() } } catch { }
     try { if ($null -ne $gripForm) { $gripForm.Dispose(); [void][SM]::DeleteObject($gripHb) } } catch { }
     try { foreach ($o in @($shroudForm, $wreckForm, $barForm)) { if ($null -ne $o) { $o.Dispose() } } } catch { }
     try { $penSymHalo.Dispose(); $penSym.Dispose(); $penReg.Dispose() } catch { }

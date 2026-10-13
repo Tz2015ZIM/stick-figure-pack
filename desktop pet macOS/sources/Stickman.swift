@@ -1079,7 +1079,7 @@ func stepFightFrame() {
     let own: Set<String> = ["walk", "idle", "sit", "wave", "cheer", "chase", "knock", "push", "press", "meet", "social"]
     if own.contains(S.state) {
         S.wall = nil; S.phase = 0
-        if F.ko { S.state = "ko"; S.timer = 160 }
+        if F.ko { S.state = "ko"; S.timer = 160; KO_T = 0 }     // down for good: up goes "K.O.!", see drawKoText
         else if F.intro { F.intro = false; S.state = "taunt"; S.timer = 50 }
         else { S.state = "guard" }
     }

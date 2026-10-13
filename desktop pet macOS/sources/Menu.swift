@@ -438,6 +438,7 @@ func mainTick() {
     if S.symFlash > 0 { S.symFlash -= 1 }
     placeSprite()
     if F.fx > 0 { drawFx() }
+    if KO_T >= 0 { drawKoText() }
     if S.tick % 50 == 0 {
         // stay above other floating windows without ever taking the focus
         spriteWin?.orderFrontRegardless()

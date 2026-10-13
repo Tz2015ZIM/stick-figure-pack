@@ -4,6 +4,7 @@
 // conjures to throw.
 
 import Cocoa
+import CoreText
 
 // ------------------------------------------------------------------- the sprite
 // He lives in a small borderless window that floats above everything, on every
@@ -624,6 +625,122 @@ func drawFx() {
     if F.fx <= 0 { p.orderOut(nil); return }
     let w = Double(p.frame.width)
     p.setFrameOrigin(cocoaOrigin((F.fxX - w / 2).rounded(), (F.fxY - w / 2).rounded(), w))
+    p.contentView?.needsDisplay = true
+    if !p.isVisible { p.orderFrontRegardless() }
+    MY_WINDOWS.insert(p.windowNumber)
+}
+
+// ------------------------------------------------------------------------- K.O.
+// Knock him out for good and "K.O.!" is typed above him the way the animator
+// would with Flash's Text tool: a text box with its little round handle in the
+// corner grows a letter at a time, the caret blinking at its end. Then the
+// animator steps out of it and the text is left selected, in Flash blue, until
+// it fades away with him. It gets a window of its own, made the first time it
+// is needed, and clicks go straight through it.
+let KO_TEXT  = "K.O.!"
+let KO_EM    = 36.0             // letter size, design units
+let KO_PAD   = 5.0              // text to box
+let KO_M     = 6.0              // box to window edge: room for the halo and the handle
+let KO_ABOVE = 36.0             // the bottom of the box, down from the top of his sprite
+let KO_WAIT  = 10               // frames after he lands before the first letter
+let KO_KEY   = 4                // frames per letter
+let KO_EDIT  = 18               // frames the finished text is still being edited
+var KO_T = -1                   // frames since it went up, or -1 while it is not up
+var koWin: NSPanel? = nil
+
+let KO_FONT = NSFont(name: "Arial Black", size: KO_EM) ?? NSFont.systemFont(ofSize: KO_EM, weight: .black)
+
+// the outline of the first n letters, on a baseline at y 0, y down like his design units
+func koPath(_ n: Int) -> CGPath {
+    let path = CGMutablePath()
+    if n == 0 { return path }
+    let font = KO_FONT as CTFont
+    let line = CTLineCreateWithAttributedString(NSAttributedString(string: String(KO_TEXT.prefix(n)), attributes: [.font: KO_FONT]))
+    for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+        let count = CTRunGetGlyphCount(run)
+        var glyphs = [CGGlyph](repeating: 0, count: count)
+        var at = [CGPoint](repeating: .zero, count: count)
+        CTRunGetGlyphs(run, CFRange(location: 0, length: 0), &glyphs)
+        CTRunGetPositions(run, CFRange(location: 0, length: 0), &at)
+        for i in 0..<count {
+            var flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: at[i].x, ty: -at[i].y)
+            if let g = CTFontCreatePathForGlyph(font, glyphs[i], &flip) { path.addPath(g) }
+        }
+    }
+    return path
+}
+let KO_PATHS = (0...KO_TEXT.count).map { koPath($0) }     // the text as it stands after each letter
+let KO_BOX = KO_PATHS[KO_TEXT.count].boundingBoxOfPath    // all of it, once it is typed
+let KOW = ((Double(KO_BOX.width)  + 2 * KO_PAD + 2 * KO_M) * SC).rounded(.up)
+let KOH = ((Double(KO_BOX.height) + 2 * KO_PAD + 2 * KO_M) * SC).rounded(.up)
+
+final class KoView: NSView {
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let g = NSGraphicsContext.current?.cgContext else { return }
+        g.clear(bounds)
+        paintKo(g)
+    }
+}
+
+// the letters typed so far, in their box: being edited, with the handle and
+// maybe the caret, or selected, in blue
+func paintKo(_ g: CGContext) {
+    let last  = KO_WAIT + (KO_TEXT.count - 1) * KO_KEY      // the frame the last letter goes in
+    let n     = KO_T < KO_WAIT ? 0 : min(KO_TEXT.count, (KO_T - KO_WAIT) / KO_KEY + 1)
+    let sel   = KO_T >= last + KO_EDIT
+    let caret = !sel && (KO_T < last || ((KO_T - last) / 8) % 2 == 0)   // steady while typing, then blinking
+    let w     = n > 0 ? Double(KO_PATHS[n].boundingBoxOfPath.maxX - KO_BOX.minX) : 0
+    let box   = CGRect(x: KO_M, y: KO_M, width: w + 2 * KO_PAD, height: Double(KO_BOX.height) + 2 * KO_PAD)
+    let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+    let rim   = CGColor(red: 1, green: 1, blue: 1, alpha: 200.0 / 255.0)     // round the thin lines
+    g.saveGState()
+    defer { g.restoreGState() }
+    g.scaleBy(x: SC, y: SC)
+    g.setLineJoin(.round)
+    g.setStrokeColor(rim); g.setLineWidth(3.0); g.stroke(box)
+    g.setStrokeColor(cgc(sel ? FLASH_BLUE : EGG_INK)); g.setLineWidth(sel ? 1.3 : 1.0); g.stroke(box)
+    if !sel {
+        // the round handle of a text box that grows as you type
+        let r = 2.6
+        let dot = CGRect(x: Double(box.maxX) - r, y: Double(box.minY) - r, width: 2 * r, height: 2 * r)
+        g.setFillColor(white); g.fillEllipse(in: dot)
+        g.setStrokeColor(cgc(EGG_INK)); g.setLineWidth(1.0); g.strokeEllipse(in: dot)
+    }
+    g.translateBy(x: KO_M + KO_PAD - Double(KO_BOX.minX), y: KO_M + KO_PAD - Double(KO_BOX.minY))
+    if n > 0 {
+        g.addPath(KO_PATHS[n]); g.setStrokeColor(white); g.setLineWidth(4.5); g.strokePath()
+        g.addPath(KO_PATHS[n]); g.setFillColor(cgc(EGG_INK)); g.fillPath()
+    }
+    if caret {
+        let cx = Double(KO_BOX.minX) + w + 2.6
+        for (lw, col) in [(3.0, rim), (1.0, cgc(EGG_INK))] {
+            g.setStrokeColor(col); g.setLineWidth(lw)
+            g.beginPath()
+            g.move(to: CGPoint(x: cx, y: Double(KO_BOX.minY) - 1.5))
+            g.addLine(to: CGPoint(x: cx, y: Double(KO_BOX.maxY) + 1.5))
+            g.strokePath()
+        }
+    }
+}
+
+// one frame of it, fading as he does: typed, then selected, then gone with
+// him. If the fight ends some other way (Esc) while he is still down, it goes.
+func drawKoText() {
+    if S.gone <= 0 && !(F.on && S.state == "ko") { KO_T = -1; koWin?.orderOut(nil); return }
+    if koWin == nil {
+        let p = overlayPanel(KOW, KOH)
+        p.ignoresMouseEvents = true
+        p.contentView = KoView(frame: NSRect(x: 0, y: 0, width: KOW, height: KOH))
+        koWin = p
+    }
+    guard let p = koWin else { return }
+    KO_T += 1
+    let vs = virtualScreen()
+    let x = max(vs.left, min(vs.right - KOW, (S.x - KOW / 2).rounded()))
+    let y = max(vs.top, (S.y - FOOT + (KO_ABOVE + KO_M) * SC - KOH).rounded())
+    p.setFrameOrigin(cocoaOrigin(x, y, KOH))
+    p.alphaValue = S.gone > 0 ? CGFloat(S.gone) / CGFloat(GONE_LEN) : 1
     p.contentView?.needsDisplay = true
     if !p.isVisible { p.orderFrontRegardless() }
     MY_WINDOWS.insert(p.windowNumber)
