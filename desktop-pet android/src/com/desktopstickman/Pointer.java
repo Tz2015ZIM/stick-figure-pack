@@ -5,9 +5,13 @@ import java.util.List;
 import java.util.Random;
 
 // Your pointer, in a fight. A phone has none, so when a fight starts a white
-// arrow turns up on screen and that is the animator: drag it about with a
-// finger. He teleports to it, punches and kicks it, grabs it and runs off with
-// it, and throws things at it. A blow knocks it out of your finger.
+// arrow turns up on screen and that is the animator. The whole screen is the
+// arena while they fight (see StickService): it is wherever your finger comes
+// down, and follows it as you drag; with a mouse, touchpad or pen it is
+// wherever the cursor is, the system's own hidden behind it, the way his real
+// pointer is on Windows. He hunts it down, punches and kicks it, grabs it and
+// runs off with it, and throws things at it. A blow knocks it out of your
+// finger until it comes down again.
 //
 // It has hits of its own: the little bar that shows under it for a moment each
 // time he lands one. Run it down to nothing and he breaks it. It hangs there
@@ -39,12 +43,12 @@ final class Pointer {
 
     boolean up;                 // on screen: somebody is fighting it
     float x, y;                 // its tip, on screen
-    boolean held;               // your finger has it
+    boolean held;               // your finger has it (or a mouse button is down)
     boolean loose;              // knocked out of your finger, which is still down
-    float offX, offY;           // tip minus finger, while held
-    float pullX, pullY;         // how far your finger dragged at it since he last looked, while he has it
+    float pullX, pullY;         // how far you dragged at it since he last looked, while he has it
     private float lastFX, lastFY;
     private double travel;      // how far the finger went since it came down
+    private float hoverX = Float.NaN, hoverY;  // where the mouse cursor was last, if there is one
 
     int hp = 10, max = 10;      // hits it can take, see Stick.Level
     double shown = 10;          // what the bar shows, easing after hp
@@ -108,12 +112,15 @@ final class Pointer {
         return null;
     }
 
+    // A finger (or a click) came down anywhere in the arena: the pointer jumps
+    // straight there. In pieces, a tap mends it sooner instead. While he has
+    // hold of it, it stays in his hand and you pull at it (see fingerMove).
     void fingerDown(float fx, float fy) {
         if (dead) { hurry = true; return; }
         held = true; loose = false;
-        offX = x - fx; offY = y - fy;
         lastFX = fx; lastFY = fy;
         travel = 0; pullX = pullY = 0;
+        if (holder() == null) move(fx, fy);
     }
 
     void fingerMove(float fx, float fy) {
@@ -123,26 +130,45 @@ final class Pointer {
         if (!held || dead) return;
         // he has hold of it: that is you pulling against him, see Stick.stepGrab
         if (holder() != null) { pullX += dx; pullY += dy; return; }
-        move(fx + offX, fy + offY);
+        move(fx, fy);
     }
 
     void fingerUp(float fx, float fy) {
         boolean tap = held && travel < 6 * sc;
         held = false; loose = false;
-        // a tap on it while he has it lands on him, as a click on the grip pad
-        // does on Windows: he lets go, and it counts as a hit
+        // a tap while he has it is a click on him, as on Windows, where any
+        // click then lands on the grip pad: he lets go, it counts as a hit,
+        // and the pointer is where you tapped
         Stick s = holder();
-        if (tap && s != null) s.gripTap(fx, fy);
+        if (tap && s != null) {
+            s.gripTap(x, y);
+            if (!dead) move(fx, fy);
+        }
     }
+
+    // The mouse (or touchpad, or a pen held over the screen) moved with nothing
+    // pressed: the pointer is where the cursor is. While he has it, moving the
+    // mouse is pulling against him, like wiggling the mouse on Windows.
+    void hover(float hx, float hy) {
+        float dx = Float.isNaN(hoverX) ? 0 : hx - hoverX, dy = Float.isNaN(hoverX) ? 0 : hy - hoverY;
+        hoverX = hx; hoverY = hy;
+        if (dead || held) return;
+        if (holder() != null) { pullX += dx; pullY += dy; return; }
+        move(hx, hy);
+    }
+
+    // the cursor went off the screen, or the mouse was put away
+    void hoverGone() { hoverX = Float.NaN; }
 
     // a blow lands on it: whatever finger had it, it is knocked out of
     void knock() {
         if (held) { held = false; loose = true; }
     }
 
-    // you pulled it out of his hand: it is back under your finger
+    // you pulled it out of his hand: it is back under your finger, or the cursor
     void yanked() {
-        if (held) move(lastFX + offX, lastFY + offY);
+        if (held) move(lastFX, lastFY);
+        else if (!Float.isNaN(hoverX)) move(hoverX, hoverY);
     }
 
     // ------------------------------------------------------------ breaking it

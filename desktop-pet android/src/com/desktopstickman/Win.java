@@ -6,6 +6,7 @@ import android.graphics.PixelFormat;
 import android.os.Build;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -22,6 +23,7 @@ final class Win extends View {
     private boolean added;
     Painter painter;
     Touch touch;
+    Touch hover;                        // a mouse, touchpad or pen moving over it, nothing pressed
 
     Win(Context ctx, WindowManager wm, int w, int h, boolean touchable) {
         super(ctx);
@@ -45,6 +47,18 @@ final class Win extends View {
         } else if (Build.VERSION.SDK_INT >= 28) {
             lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
+    }
+
+    // fully opaque after all: for a window that only ever sits over the fight
+    // arena, which is his, so it blocks nobody's taps
+    void opaque() { lp.alpha = 1f; }
+
+    // no system cursor over it: in a fight, his arrow is the cursor
+    private boolean noCursor;
+    void hideCursor(boolean hide) {
+        if (hide == noCursor) return;
+        noCursor = hide;
+        setPointerIcon(hide ? PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_NULL) : null);
     }
 
     // top-left corner on screen, shown
@@ -84,5 +98,9 @@ final class Win extends View {
 
     @Override public boolean onTouchEvent(MotionEvent e) {
         return touch != null && touch.touch(e);
+    }
+
+    @Override public boolean onHoverEvent(MotionEvent e) {
+        return hover != null ? hover.touch(e) : super.onHoverEvent(e);
     }
 }

@@ -26,7 +26,15 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(true);         // the fight arena steps aside
         build();
+    }
+
+    @Override protected void onPause() {
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(false);
+        super.onPause();
     }
 
     private void build() {
@@ -96,9 +104,11 @@ public final class MainActivity extends Activity {
             "• Menu > Convert to Symbol wraps him in a Flash symbol box. Name him after an Alan Becker " +
             "figure (The Chosen One, The Dark Lord, The Second Coming, Red, Green, Blue, Yellow, Purple, " +
             "The Victim, Alan Becker) and he becomes it.\n" +
-            "• Tick Fight mode there and he takes on your pointer: an arrow appears that you drag about, " +
-            "and wherever it goes he teleports to it. Tap him to hit back. Break its health bar and he " +
-            "smashes it; knock him out and \"K.O.!\" is typed above him as he fades away.\n" +
+            "• Tick Fight mode there and he takes on your pointer: an arrow that jumps to wherever you " +
+            "touch and follows your finger, or with a mouse, touchpad or pen, goes wherever the cursor goes. " +
+            "Tap him to hit back. Break its health bar and he smashes it; knock him out and \"K.O.!\" is " +
+            "typed above him as he fades away. While you fight, the whole screen is the arena, so taps do " +
+            "not reach your apps: stop the fight from his menu or his notification.\n" +
             "• Every time you come back to your phone, they wave at you.", 14, 0.85f);
 
         ScrollView sv = new ScrollView(this);

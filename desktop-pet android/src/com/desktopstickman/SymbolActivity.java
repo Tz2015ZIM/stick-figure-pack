@@ -80,8 +80,9 @@ public final class SymbolActivity extends Activity {
         hard.setEnabled(fight.isChecked());
         fight.setOnCheckedChangeListener((v, on) -> hard.setEnabled(on));
         TextView about = new TextView(this);
-        about.setText("He fights your pointer: an arrow you drag about. He teleports to it, punches it, grabs it, " +
-                      "drags it off and throws Flash panels at it. Tap him to hit back.");
+        about.setText("He fights your pointer: an arrow that is wherever your finger touches (or wherever the mouse " +
+                      "is). He punches it, grabs it, drags it off and throws Flash panels at it. Tap him to hit back. " +
+                      "While you fight, taps go to the fight, not your apps: stop it from his menu or notification.");
         about.setTextSize(12);
         about.setAlpha(0.6f);
         right.addView(fight);
@@ -119,6 +120,18 @@ public final class SymbolActivity extends Activity {
         sv.addView(col);
         setContentView(sv);
         name.requestFocus();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(true);         // the fight arena steps aside
+    }
+
+    @Override protected void onPause() {
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(false);
+        super.onPause();
     }
 
     private TextView label(String t) {

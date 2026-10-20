@@ -23,7 +23,15 @@ public final class MenuActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(true);         // the fight arena steps aside
         build();
+    }
+
+    @Override protected void onPause() {
+        StickService s = StickService.me;
+        if (s != null) s.uiShown(false);
+        super.onPause();
     }
 
     private Stick him() {

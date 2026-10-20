@@ -384,17 +384,15 @@ final class Stick {
 
     // ------------------------------------------------------------------ fight
     // Fight mode, ticked in the Convert to Symbol dialog: Animator vs. Animation,
-    // with your pointer (the arrow) as the animator. On Windows he runs it down,
-    // climbing whatever is in the way; here, whenever it is out of reach, he
-    // teleports to it (teleport): gone from where he stood, there beside it
-    // that same frame, mid flying kick. He throws punches, kicks and flying
-    // kicks at it; a blow that lands pops a spark and knocks the pointer back a
-    // little. Waiting to teleport again, with it far off, he conjures a Flash
-    // panel and throws that at it, up to three in the air at once. The pointer
-    // has hits too, and when they run out he breaks it and wins the round (see
-    // Pointer), until it mends. Tap him to hit back - eight hits and he is out,
-    // and you have won: he lies there seeing stars under a "K.O.!", fades away,
-    // and that copy of him quits.
+    // with your pointer (the arrow) as the animator. He hunts it down, climbing
+    // whatever is in the way, and throws punches, kicks and flying kicks at it;
+    // a blow that lands pops a spark and knocks the pointer back a little. When
+    // it is out of reach he conjures a Flash panel and throws that at it
+    // instead, up to three in the air at once. The pointer has hits too, and
+    // when they run out he breaks it and wins the round (see Pointer), until it
+    // mends. Tap him to hit back - eight hits and he is out, and you have won:
+    // he lies there seeing stars under a "K.O.!", fades away, and that copy of
+    // him quits.
     //
     // It is all show. While he fights he never presses buttons or opens apps.
     static final class Level {
@@ -448,7 +446,6 @@ final class Stick {
         boolean far;                // the pointer is a long way off: time for throwing
         boolean grab;               // he has hold of your pointer
         int grabCool;               // frames before he will grab it again
-        int blink;                  // frames before he can teleport again
         double gx, gy;              // where he last put the pointer
         double sx, sy;              // where it was when he grabbed it
         int run = 1;                // the way he is running off with it
@@ -456,9 +453,7 @@ final class Stick {
     }
     final Fight f = new Fight();
 
-    static final String[] FIGHT_STATES = { "guard", "taunt", "punch", "kick", "ko", "heave", "hurl", "haul", "fling", "win", "shock" };
-
-    static final int BLINK_GAP = 40;    // frames before he can teleport again (half that in hard mode)
+    static final String[] FIGHT_STATES = { "hunt", "guard", "taunt", "punch", "kick", "ko", "heave", "hurl", "haul", "fling", "win", "shock" };
     static final int GONE_LEN = 50;     // frames he takes to fade away once you have beaten him
     static final int PUMP_LEN = 48;     // he punches the air this long over your broken pointer, then jumps for joy
 
@@ -491,7 +486,6 @@ final class Stick {
         f.inv = 0; f.cool = (int) (20 * tune.pace); f.air = ""; f.px = p.x; f.py = p.y;
         f.fly = null; f.flying.clear(); f.throwCool = (int) (90 * tune.pace);    // fists first
         f.grab = false; f.grabCool = (int) (60 * tune.pace);
-        f.blink = (int) (20 * tune.pace);
         p.max = tune.ptr; p.hp = p.max; p.shown = p.max;
         pending = "";                       // squaring up is his entrance now
         chase = 0; chasePeer = -1;
@@ -741,7 +735,7 @@ final class Stick {
         if (f.inv > 0 || state.equals("ko")) return;
         f.spark.pop(cx, cy, rng);
         boolean facing = round(cx) == round(x) || sign(cx - x) == dir;
-        if (facing && in(state, "guard", "taunt", "punch", "kick") && rng.nextInt(100) < tune.block) {
+        if (facing && in(state, "guard", "taunt", "hunt", "punch", "kick") && rng.nextInt(100) < tune.block) {
             f.inv = 8; f.cool = 0;
             state = "guard"; phase = 0.0;
             return;
@@ -756,21 +750,14 @@ final class Stick {
         wall  = null;
     }
 
-    // the pointer is out of reach: he is there beside it at once, wherever it
-    // is, mid flying kick with his foot right on it. Then he drops to whatever
-    // is below.
-    void teleport() {
-        Pointer p = room.ptr;
-        int d = p.x >= x ? 1 : -1;          // he comes at it from the side he was on
-        double nx = Math.max(room.workL + 8 * SC, Math.min(room.workR - 8 * SC, p.x - d * 19 * SC));
-        if (round(p.x) != round(nx)) d = sign(p.x - nx);
-        x = nx; dir = d;
-        y = Math.min(p.y + 28 * SC, room.floor());
-        ledge = null; wall = null;
-        vx = 0.0; vy = 0.0;
+    void jumpKick(double dx, double dy) {
+        // rise just far enough for his foot to meet the pointer at the top
+        double h = Math.min(240 * SC, Math.max(40 * SC, -dy - 6 * SC));
+        vy = -Math.sqrt(2 * GRAVITY * h);
+        vx = Math.max(-9 * SC, Math.min(9 * SC, dx / (-vy / GRAVITY)));
+        if (dx != 0) dir = sign(dx);
         state = "fall"; f.air = "flykick"; f.hitDone = false; phase = 0.0;
         f.cool = 10;
-        f.blink = (int) (BLINK_GAP * tune.pace);
     }
 
     // how solid he is: fading away once you have beaten him
@@ -784,7 +771,6 @@ final class Stick {
         if (f.hurt > 0)  f.hurt--;
         if (f.cool > 0)  f.cool--;
         if (f.dodge > 0) f.dodge--;
-        if (f.blink > 0) f.blink--;
         stepThrow();
         Pointer p = room.ptr;
 
@@ -832,16 +818,16 @@ final class Stick {
         // the pointer lies in pieces: he celebrates, and when it starts pulling
         // itself back together he jumps
         if (p.dead) {
-            if (p.mend && in(state, "guard", "taunt", "hurl", "win")) {
+            if (p.mend && in(state, "guard", "hunt", "taunt", "hurl", "win")) {
                 state = "shock"; timer = 0; phase = 0.0;
-            } else if (!p.mend && in(state, "guard", "taunt", "hurl")) {
+            } else if (!p.mend && in(state, "guard", "hunt", "taunt", "hurl")) {
                 state = "win"; timer = 0; phase = 0.0;
             }
             if (in(state, "win", "shock") && round(p.bx) != round(x)) dir = sign(p.bx - x);
         }
 
         // you swiped at him: now and then he hops back out of the way
-        if (in(state, "guard", "taunt") && f.dodge <= 0 && swipe > tune.alert * SC) {
+        if (in(state, "guard", "hunt", "taunt") && f.dodge <= 0 && swipe > tune.alert * SC) {
             double dx = p.x - x, dy = p.y - (y - 34 * SC);
             double rr = 100 * SC * tune.reach;
             if (dx * dx + dy * dy < rr * rr) {
@@ -856,7 +842,7 @@ final class Stick {
         }
     }
 
-    // squared up to the pointer: attack it in reach, teleport to it out of reach
+    // squared up to the pointer: attack it in reach, go after it out of reach
     void stepGuard() {
         Ledge l = ledge;
         if (l == null) { state = "fall"; return; }
@@ -883,10 +869,14 @@ final class Stick {
             state = (dy > 10 * SC || rng.nextInt(10) >= 7) ? "kick" : "punch";
             timer = state.equals("punch") ? 14 : 20;
             phase = 0.0;
-        } else if (f.blink <= 0 && !p.dead) {
-            teleport();                         // out of reach, wherever it is: he teleports to it
+        } else if (ax < 110 * SC && dy <= -44 * SC && dy > -250 * SC) {
+            jumpKick(dx, dy);                   // above him, but not by much
         } else if (f.far && tryThrow()) {
-            // waiting to teleport again, a long way off: a panel thrown at it
+            // a long way off, whichever way: a panel thrown at it
+        } else if (ax < 110 * SC && dy <= -250 * SC) {
+            state = "taunt"; timer = 60; phase = 0.0;   // well out of reach: 'come on, then'
+        } else if (ax >= 80 * SC) {
+            state = "hunt"; phase = 0.0;
         } else if (ax >= 30 * SC) {
             // shuffle in with his fists up, never off the edge
             double v = SPEED * 0.7 * tune.speed;
@@ -914,6 +904,55 @@ final class Stick {
             phase = 0.0;
             if (f.gloat) { f.gloat = false; state = "taunt"; timer = 45; }
             else         { state = "guard"; }
+        }
+    }
+
+    // running at the pointer, climbing or leaping at whatever is in the way
+    void stepHunt() {
+        Ledge l = ledge;
+        if (l == null) { state = "fall"; return; }
+        Pointer p = room.ptr;
+        double dx = p.x - x;
+        double dy = p.y - (y - 34 * SC);
+        double ax = Math.abs(dx);
+        if (ax < 60 * SC || (ax < 110 * SC && dy < -44 * SC)) {
+            state = "guard"; return;            // close enough to fight
+        }
+        phase += 0.40;
+        dir = sign(dx);
+
+        // a throw is due, with the pointer far off: a panel of his own
+        if (tick % 4 == 0 && f.far && tryThrow()) return;
+
+        Ledge w = findWall();
+        if (w != null) {
+            wall  = w;
+            state = "climb";
+            x     = dir > 0 ? w.l - HUG : w.r + HUG;
+            phase = 0.0;
+            return;
+        }
+        if (dy < -44 * SC) {                    // it is up there: jump for a window corner
+            Ledge up = findReach();
+            if (up != null) {
+                wall  = up;
+                state = "leap";
+                timer = 18;
+                ly0   = y;
+                phase = 0.0;
+                x     = dir > 0 ? up.l - HUG : up.r + HUG;
+                return;
+            }
+        }
+
+        x += dir * SPEED * 2.2 * tune.speed;
+        // he jumps off an edge to get at it; the floor's edge stops him
+        if (x < l.l + EDGE) {
+            if (l.ground) { x = l.l + EDGE; state = "taunt"; timer = 40; }
+            else { state = "fall"; vx = -2.4 * SC; vy = -3.0 * SC; }
+        } else if (x > l.r - EDGE) {
+            if (l.ground) { x = l.r - EDGE; state = "taunt"; timer = 40; }
+            else { state = "fall"; vx = 2.4 * SC; vy = -3.0 * SC; }
         }
     }
 
@@ -978,6 +1017,7 @@ final class Stick {
 
         switch (state) {
 
+            case "hunt":  stepHunt(); return;
             case "guard": stepGuard(); return;
             case "taunt": stepGuard(); return;
             case "punch": stepStrike(); return;

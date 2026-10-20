@@ -35,20 +35,27 @@ Fight mode / Hard mode.
 ### Fight mode
 
 A phone has no mouse pointer, so when a fight starts a white arrow appears:
-that is your pointer, the animator. Drag it about with a finger.
+that is your pointer, the animator. It is wherever your finger touches: it
+jumps straight there and follows your finger as you drag. With a mouse, a
+touchpad or a pen, it is wherever the cursor is, even with nothing pressed,
+and the system's own cursor is hidden behind it, so it works like his real
+pointer on Windows.
 
-Instead of running and climbing after it the way he does on Windows, he
-teleports to it: whenever it is out of reach he is gone from where he stood
-and right beside it that same instant, mid flying kick, then drops to
-whatever is below. He can teleport again about a second later (half
-that in hard mode); in between, with it far off, he throws Flash panels at
-it. Up close he punches and kicks it (each blow knocks it out of your
-finger), and grabs it and runs off with it: put a finger on it and wiggle
-hard to pull it back, or tap it, and he lets go. Its health bar runs out and
-he smashes it to pieces and celebrates; tap the pieces to mend it sooner.
-Tap him to hit back: knock him out and "K.O.!" is typed above him as he
-fades away. *Stop the fight* is in his menu and on the notification (Esc on
-Windows).
+He hunts it, climbing whatever is in the way, punches, kicks and
+flying-kicks it (each blow knocks it out of your finger until you touch
+again), grabs it and runs off with it, and throws Flash panels at it when it
+is out of reach. While he has it, wiggle your finger (or the mouse) hard to
+pull it back, or just tap: he lets go, it counts as a hit, and the pointer
+is where you tapped. Its health bar runs out and he smashes it to pieces and
+celebrates; tap to mend it sooner. Tap him to hit back: knock him out and
+"K.O.!" is typed above him as he fades away.
+
+Android only tells an app where you touch (or where the mouse is) over its
+own windows, so while there is a fight the whole screen is the arena: an
+invisible window over everything, and taps go to the fight instead of your
+apps. The status bar, the notifications and the keyboard still work, and so
+should the home and back gestures. *Stop the fight* is in his menu (hold him
+down) and on the notification (Esc on Windows).
 
 ## Let him see the screen (Accessibility)
 

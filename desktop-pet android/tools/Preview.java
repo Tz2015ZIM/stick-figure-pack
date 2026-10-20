@@ -252,30 +252,38 @@ public final class Preview {
         s.convertSymbol("blue stickman", "Movie Clip", 4, true, hard);
         check(s.f.on && s.charName.equals("Blue") && r.ptr.up, "fight did not start as Blue");
         check(s.f.max == (hard ? 20 : 8) && r.ptr.max == (hard ? 6 : 10), "wrong hits for " + (hard ? "hard" : "normal") + " mode");
-        // the pointer up out of his reach: he teleports there, foot first, and the kick lands
-        r.ptr.move(s.x < W / 2 ? W - 150 : 150, 700);
-        int before = r.ptr.hp, waited = 0;
-        boolean went = false;
-        while (!went && waited++ < 200) { int b = s.f.blink; r.step(); went = s.f.blink > b; }
-        check(went, "never teleported to the pointer (" + s.state + ")");
-        double footX = s.x + s.dir * 19 * SC, footY = s.y - 28 * SC;
-        check(Math.abs(footX - r.ptr.x) < 1 && Math.abs(footY - r.ptr.y) < 1 && s.f.air.equals("flykick"),
-              "teleported to (" + footX + ", " + footY + ") with the pointer at (" + r.ptr.x + ", " + r.ptr.y + ")");
+        // a finger anywhere and the pointer is there; a drag and it follows
+        r.ptr.fingerDown(150, 900);
+        check(r.ptr.x == 150 && r.ptr.y == 900, "pointer did not jump to the finger");
+        r.ptr.fingerMove(400, 1000);
+        check(r.ptr.x == 400 && r.ptr.y == 1000, "pointer did not follow the finger");
+        r.ptr.fingerUp(400, 1000);
+        // a mouse cursor moving about, nothing pressed: the pointer is where it is
+        r.ptr.hover(700, 500);
+        r.ptr.hover(720, 520);
+        check(r.ptr.x == 720 && r.ptr.y == 520, "pointer did not follow the mouse");
+        // while he has it, moving the mouse is pulling at it, and hard enough gets it back
+        s.startGrab();
         r.step();
-        check(r.ptr.hp < before, "the flying kick he teleported in with missed");
-        // while he has it, a tap on it gets it back, and hurts him
-        for (int i = 0; i < 90; i++) r.step();      // let him land
-        r.ptr.restore();                            // in one piece, if that kick broke it
+        float hx = r.ptr.x;
+        r.ptr.hover(100, 300);
+        check(s.f.grab && r.ptr.x == hx, "the mouse moving took it straight out of his hand");
+        for (int k = 0; k < 12 && s.f.grab; k++) { r.ptr.hover(k % 2 == 0 ? 900 : 100, 300); r.step(); }
+        check(!s.f.grab, "wiggling the mouse never got it back from him");
+        r.ptr.hoverGone();
+        for (int i = 0; i < 60; i++) r.step();
+        // and a tap gets it back too, where you tapped, and hurts him
+        r.ptr.restore();
         s.startGrab();
         int hp = s.f.hp;
-        r.ptr.fingerDown(r.ptr.x, r.ptr.y);
-        r.ptr.fingerUp(r.ptr.x, r.ptr.y);
-        check(!s.f.grab, "a tap did not get the pointer back from him");
+        r.ptr.fingerDown(800, 600);
+        check(s.f.grab, "a finger coming down took it out of his hand");
+        r.ptr.fingerUp(800, 600);
+        check(!s.f.grab && r.ptr.x == 800 && r.ptr.y == 600, "a tap did not get the pointer back from him");
         check(s.f.hp == hp - 1 || s.f.inv == 8, "a tap while he had it did not count as a hit");
         for (int i = 0; i < 60; i++) r.step();      // let him get back on his feet
         Map<String, Integer> seen = new TreeMap<>();
-        int breaks = 0, maxPanels = 0, hits = 0, blows = 0, yanks = 0, blinks = 0;
-        int lastBlink = s.f.blink;
+        int breaks = 0, maxPanels = 0, hits = 0, blows = 0, yanks = 0;
         boolean wasDead = false;
         int lastPtrHp = r.ptr.hp;
         java.util.Random you = new java.util.Random(seed + 7);
@@ -283,7 +291,8 @@ public final class Preview {
         for (int frame = 0; frame < 30000 && r.sticks.contains(s); frame++) {
             // you: leave the arrow up out of his reach a while, so out come the panels
             if (frame >= 1500 && frame < 2400) {
-                if (frame == 1500) { r.ptr.fingerUp(fx, fy); r.ptr.move(r.workR - 60, r.workT + 80); }
+                if (frame == 1500) { r.ptr.fingerUp(fx, fy); r.ptr.restore(); fx = s.x < W / 2 ? r.workR - 60 : r.workL + 60; }
+                if (!r.ptr.dead) r.ptr.move(fx, r.workT + 20);      // kept up in the far corner
                 r.step();
                 maxPanels = Math.max(maxPanels, s.props.size());
                 if (r.ptr.dead && !wasDead) breaks++;
@@ -321,8 +330,6 @@ public final class Preview {
             if (r.sticks.contains(s)) inBounds(r, s, frame);
             String st = s.state.equals("fall") && !s.f.air.isEmpty() ? s.f.air : s.state;
             seen.merge(st, 1, Integer::sum);
-            if (s.f.blink > lastBlink) blinks++;        // it only ever goes up as he teleports
-            lastBlink = s.f.blink;
             maxPanels = Math.max(maxPanels, s.props.size());
             if (r.ptr.dead && !wasDead) breaks++;
             if (r.ptr.hp < lastPtrHp) blows++;
@@ -334,12 +341,11 @@ public final class Preview {
         String name = "fight " + seed + (hard ? " hard" : "");
         System.out.println(name + ": states " + seen);
         System.out.println(name + ": blows on the pointer " + blows + ", pointer broken " + breaks + " times, most panels at once "
-                           + maxPanels + ", taps on him " + hits + ", pointer pulled back " + yanks + " times, teleports " + blinks);
-        check(blinks > 0, "never teleported during the fight");
+                           + maxPanels + ", taps on him " + hits + ", pointer pulled back " + yanks + " times");
+        check(seen.containsKey("hunt"), "never ran after the pointer");
         check(!r.sticks.contains(s), "never knocked out and gone");
         check(breaks > 0, "never broke the pointer");
-        // he throws while waiting to teleport again; in hard mode he hardly waits
-        if (!hard) check(maxPanels > 0, "never threw a panel");
+        check(maxPanels > 0, "never threw a panel");
         check(seen.containsKey("haul"), "never grabbed the pointer");
         check(!r.ptr.up, "pointer still up after he was beaten");
     }

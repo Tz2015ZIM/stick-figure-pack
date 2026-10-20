@@ -75,10 +75,21 @@ public final class StickService extends Service implements Room.Hands {
             win = new Win(ui, wm, s.BOXW, s.BOXH, true);
             win.painter = c -> art.figure(c, pose);
             win.touch = new Touchy(s);
+            win.hover = StickService.this::arenaHover;     // the mouse over him still moves your pointer
         }
     }
     private final Map<Stick, Body> bodies = new IdentityHashMap<>();
     private Win ptrWin, ptrSpark, wreckWin;
+
+    // The fight arena: an invisible window over the whole screen while anyone
+    // is fighting, so your pointer can be wherever your finger comes down, or
+    // wherever the mouse cursor is. A phone only tells an app where you touch
+    // (or where the mouse is) over its own windows, so in a fight taps go to
+    // the fight and not to your apps. It steps aside while his menu or one of
+    // his dialogs is open (uiOpen), which it would otherwise cover.
+    private Win arena;
+    private Win.Touch arenaTarget;      // whoever the finger now on the arena belongs to
+    private int uiOpen;
 
     // label of every app on the home screen -> how to open it
     private volatile Map<String, Intent> apps = new HashMap<>();
@@ -165,7 +176,7 @@ public final class StickService extends Service implements Room.Hands {
         try { unregisterReceiver(screen); } catch (RuntimeException ignored) { }
         for (Body b : bodies.values()) closeBody(b);
         bodies.clear();
-        for (Win w : new Win[] { ptrWin, ptrSpark, wreckWin }) if (w != null) w.close();
+        for (Win w : new Win[] { ptrWin, ptrSpark, wreckWin, arena }) if (w != null) w.close();
         super.onDestroy();
     }
 
@@ -248,6 +259,7 @@ public final class StickService extends Service implements Room.Hands {
             if (!room.sticks.contains(s)) { closeBody(b); bodies.remove(s); continue; }
             Figure.pose(s, b.pose);
             b.win.setAlpha(s.alpha());
+            b.win.hideCursor(p.up);
             b.win.place((int) Math.round(s.x - s.CX), (int) Math.round(s.y - s.FOOT));
 
             if (s.f.spark.on()) {
@@ -284,13 +296,26 @@ public final class StickService extends Service implements Room.Hands {
             }
         }
 
-        // your pointer, while somebody is fighting it and it is in one piece
+        // the arena, under the pointer, while there is a fight
+        if (p.up && uiOpen == 0) {
+            if (arena == null) {
+                arena = new Win(ui, wm, room.scrR - room.scrL, room.scrB - room.scrT, true);
+                arena.touch = this::arenaTouch;
+                arena.hover = this::arenaHover;
+                arena.hideCursor(true);
+            }
+            arena.resize(room.scrR - room.scrL, room.scrB - room.scrT);
+            arena.place(room.scrL, room.scrT);
+        } else if (arena != null) arena.hide();
+
+        // your pointer, while somebody is fighting it and it is in one piece;
+        // the arena takes the taps for it
         int box = Math.round(Art.PTR_BOX * room.sc);
         if (p.up && !p.dead) {
             if (ptrWin == null) {
-                ptrWin = new Win(ui, wm, box, box, true);
+                ptrWin = new Win(ui, wm, box, box, false);
+                ptrWin.opaque();
                 ptrWin.painter = c -> art.pointer(c, room.ptr);
-                ptrWin.touch = this::pointerTouch;
             }
             ptrWin.place(Math.round(p.x - Art.TIP_X * room.sc), Math.round(p.y - Art.TIP_Y * room.sc));
         } else if (ptrWin != null) ptrWin.hide();
@@ -310,6 +335,8 @@ public final class StickService extends Service implements Room.Hands {
                     if (e.getActionMasked() == MotionEvent.ACTION_DOWN) room.ptr.hurry = true;
                     return true;
                 };
+                wreckWin.hover = this::arenaHover;
+                wreckWin.hideCursor(true);
             }
             wreckWin.resize((int) p.ww, (int) p.wh);
             wreckWin.place(Math.round(p.wx), Math.round(p.wy));
@@ -377,6 +404,47 @@ public final class StickService extends Service implements Room.Hands {
             s.touchCancel();
             openMenu(s.slot);
         }
+    }
+
+    // A finger (or a click) came down on the arena: on one of them, whose
+    // window it may cover, it is his, to drag or hit; anywhere else it is your
+    // pointer's. The rest of that touch goes the same way.
+    private boolean arenaTouch(MotionEvent e) {
+        if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            float x = e.getRawX(), y = e.getRawY();
+            arenaTarget = this::pointerTouch;
+            for (int i = room.sticks.size() - 1; i >= 0; i--) {
+                Stick s = room.sticks.get(i);
+                double l = s.x - s.CX, t = s.y - s.FOOT;
+                Body b = bodies.get(s);
+                if (b != null && x >= l && x < l + s.BOXW && y >= t && y < t + s.BOXH) { arenaTarget = b.win.touch; break; }
+            }
+        }
+        return arenaTarget != null && arenaTarget.touch(e);
+    }
+
+    // a mouse, touchpad or pen moving over the screen with nothing pressed:
+    // in a fight, your pointer goes where its cursor goes
+    private boolean arenaHover(MotionEvent e) {
+        if (!room.ptr.up) return false;
+        switch (e.getActionMasked()) {
+            case MotionEvent.ACTION_HOVER_ENTER:
+            case MotionEvent.ACTION_HOVER_MOVE:
+                room.ptr.hover(e.getRawX(), e.getRawY());
+                hover(true, e.getRawX(), e.getRawY());
+                return true;
+            case MotionEvent.ACTION_HOVER_EXIT:
+                room.ptr.hoverGone();
+                hover(false, e.getRawX(), e.getRawY());
+                return true;
+        }
+        return false;
+    }
+
+    // his menu and dialogs are over his windows only while the arena is out of the way
+    void uiShown(boolean on) {
+        uiOpen = Math.max(0, uiOpen + (on ? 1 : -1));
+        if (on && arena != null) arena.hide();
     }
 
     private boolean pointerTouch(MotionEvent e) {
