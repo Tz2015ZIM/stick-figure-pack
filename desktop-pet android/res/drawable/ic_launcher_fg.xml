@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the app icon: him, wrapped in a Flash symbol box -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:strokeColor="#FF0099FF"
+        android:strokeWidth="1.6"
+        android:pathData="M35,25L73,25L73,83L35,83Z" />
+    <path
+        android:strokeColor="#FF0099FF"
+        android:strokeWidth="1.8"
+        android:pathData="M51,54L57,54M54,51L54,57" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M47.5,37a6.5,6.5 0,1 0,13 0a6.5,6.5 0,1 0,-13 0M54,44L54,61M54,48L45,58M54,48L63,58M54,61L46,78M54,61L62,78" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M47.5,37a6.5,6.5 0,1 0,13 0a6.5,6.5 0,1 0,-13 0Z" />
+    <path
+        android:strokeColor="#FF18181C"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M47.5,37a6.5,6.5 0,1 0,13 0a6.5,6.5 0,1 0,-13 0M54,44L54,61M54,48L45,58M54,48L63,58M54,61L46,78M54,61L62,78" />
+</vector>

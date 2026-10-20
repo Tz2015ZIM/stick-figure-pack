@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="eyes_about">Lets the stickman see what is on screen, so he can stand on dialogs, the keyboard, buttons and your home screen icons, and run over to whatever you tap. It only looks: it never presses anything unless you tick "Let him really press buttons" in his menu, and stamping on an app icon opens that app at most once every 45 seconds (you can switch that off in his menu too). Nothing it sees is stored or sent anywhere.</string>
+</resources>

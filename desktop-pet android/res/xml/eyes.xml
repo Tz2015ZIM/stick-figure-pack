@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- what Eyes.java is told about: windows coming and going, things being
+     tapped and scrolled; and it may look at what is in the windows -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/eyes_about"
+    android:accessibilityEventTypes="typeViewClicked|typeWindowStateChanged|typeWindowsChanged|typeViewScrolled|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100" />
